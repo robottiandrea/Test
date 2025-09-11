@@ -494,28 +494,17 @@ async function ensureGifWorkerUrl() {
   return GIF_WORKER_URL;
 }
 
-// opzionale: pulizia quando chiudi la pagina
-window.addEventListener('beforeunload', () => {
-  if (GIF_WORKER_URL) URL.revokeObjectURL(GIF_WORKER_URL);
-});
+</script>
 <script>
-  // Alcune build di UPNG cercano una funzione di deflate globale.
-  // Se c’è pako, instradiamo la compressione verso pako.deflate.
+  // Shim: instrada la compressione di UPNG verso pako.deflate
   (function(){
     if (window.UPNG && window.pako) {
-      // UPNG usa internamente una funzione di compressione; la agganciamo a pako
-      if (!UPNG.compress && UPNG.encode) {
-        // fallback su alcune varianti
-        UPNG.compress = function(buf){ return pako.deflate(new Uint8Array(buf)); };
-      }
-      if (UPNG.encode) {
-        // patch comune: alcune build leggono encode.compress
-        UPNG.encode.compress = function(buf){ return pako.deflate(new Uint8Array(buf)); };
-      }
+      const defl = (buf) => window.pako.deflate(new Uint8Array(buf));
+      if (!UPNG.compress) UPNG.compress = defl;
+      if (UPNG.encode && !UPNG.encode.compress) UPNG.encode.compress = defl;
     }
   })();
 </script>
-
-</script>
+  
 </body>
 </html>
