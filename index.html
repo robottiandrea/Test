@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Doodles — Export Video (overlay inline, iOS & Desktop)</title>
+  <title>Doodles — Export Video (MP4 desktop & iOS, overlay inline)</title>
   <link rel="icon" href="data:,">
   <style>
     :root{
@@ -25,7 +25,8 @@
     #view{display:block}
     #lottieOff{position:absolute;left:-99999px;top:-99999px;width:1px;height:1px;overflow:hidden}
     .hint{color:var(--warn)}
-    /* === Overlay inline per preview/salvataggio video === */
+
+    /* Overlay inline */
     #video-overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;place-items:center;z-index:99999}
     #video-overlay.show{display:grid}
     #video-card{background:#111;border:1px solid #333;border-radius:14px;max-width:920px;width:92%;padding:12px;color:#fff}
@@ -40,6 +41,8 @@
 
   <!-- Lottie -->
   <script src="https://unpkg.com/lottie-web/build/player/lottie.min.js"></script>
+  <!-- FFmpeg WASM (fallback WebM->MP4) -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/ffmpeg.min.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -50,7 +53,7 @@
       <label for="doodleId">ID Doodle:</label>
       <input type="number" id="doodleId" placeholder="es. 0" min="0" style="width:120px">
       <button id="btnCompose" class="primary">Fetch &amp; Compose</button>
-      <button id="btnExportVID">Export Video</button>
+      <button id="btnExportVID">Export Video (MP4)</button>
       <span class="hint" id="fmtHint"></span>
     </div>
   </div>
@@ -66,7 +69,7 @@
   <!-- Lottie off-screen -->
   <div id="lottieOff"></div>
 
-  <!-- Overlay inline (stessa pagina) -->
+  <!-- Overlay inline -->
   <div id="video-overlay" aria-hidden="true">
     <div id="video-card" role="dialog" aria-modal="true" aria-labelledby="ovlTitle">
       <h2 id="ovlTitle">Anteprima video</h2>
@@ -74,8 +77,7 @@
         <video id="inlineVideo" playsinline controls loop></video>
       </div>
       <div class="tip" id="ovlTip">
-        📲 iPhone/iPad: tocca e tieni premuto sul video → <b>Salva video</b>.
-        Oppure usa <b>Condividi</b>.
+        📲 iPhone/iPad: tocca e tieni premuto sul video → <b>Salva video</b>. Oppure usa <b>Condividi</b>.
       </div>
       <div class="row">
         <button id="btnShare" class="primary" style="display:none">Condividi / Salva</button>
@@ -90,7 +92,7 @@
 /* ========================= Config ========================= */
 const OUT_SIZE = 900;            // 900x900 output
 const MASTER_SIZE = 1800;        // render master
-const MICRO_BLUR = 0.25;         // anti banding/rumore
+const MICRO_BLUR = 0.25;         // anti banding
 const VIDEO_BITRATE = 8_000_000; // ~8 Mbps
 
 /* ========================= Utils & IPFS ========================= */
@@ -103,15 +105,7 @@ async function fetchWithTimeout(url,{timeout=8000,...opts}={}){const ctrl=new Ab
 async function fetchWithFallback(urls,{timeout=8000,...opts}={}){let last=null;for(const u of urls){try{const r=await fetchWithTimeout(u,{timeout,...opts});if(r.ok) return r;last=new Error('HTTP '+r.status);}catch(e){last=e}}throw last||new Error('All gateways failed');}
 function ipfsToHttpFallbacks(ipfsUrl){if(!ipfsUrl) return [];const path=ipfsUrl.startsWith('ipfs://')?ipfsUrl.slice(7):ipfsUrl;const cb='?cb='+Date.now().toString(36);return IPFS_GATEWAYS.map(g=>g+path+cb);}
 
-/* ========================= Posterize opzionale ========================= */
-function makePosterizeLUT(bits=6){const lut=new Uint8Array(256);const shift=8-bits;for(let i=0;i<256;i++) lut[i]=(i>>shift)<<shift;return lut;}
-const POSTER_LUT = makePosterizeLUT(6);
-function posterizeImageData(imgData){
-  const d=imgData.data;for(let i=0;i<d.length;i+=4){d[i]=POSTER_LUT[d[i]];d[i+1]=POSTER_LUT[d[i+1]];d[i+2]=POSTER_LUT[d[i+2]];}
-  return imgData;
-}
-
-/* ========================= iOS helpers & MIME ========================= */
+/* ========================= Env detection ========================= */
 function isIOS(){
   return /iP(hone|ad|od)/.test(navigator.userAgent) ||
          (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -119,9 +113,44 @@ function isIOS(){
 function pickBestMime(){
   const prefer = isIOS()
     ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']
-    : ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4'];
+    : ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
   for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
   return '';
+}
+const hasWebCodecs = 'VideoEncoder' in window && 'VideoFrame' in window;
+
+/* ========================= FFmpeg (fallback WebM->MP4) ========================= */
+let __ffmpeg = null, __ffmpegLoading = null;
+async function ensureFFmpeg(){
+  if(__ffmpeg) return __ffmpeg;
+  if(__ffmpegLoading) return __ffmpegLoading;
+  const { createFFmpeg } = FFmpeg;
+  __ffmpeg = createFFmpeg({
+    log: false,
+    corePath: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js"
+  });
+  __ffmpegLoading = __ffmpeg.load().then(()=>__ffmpeg);
+  return __ffmpegLoading;
+}
+async function transcodeToMP4(blobWebM, { fps=30 } = {}){
+  const ffmpeg = await ensureFFmpeg();
+  const inName  = "in.webm";
+  const outName = "out.mp4";
+  const { fetchFile } = FFmpeg;
+  ffmpeg.FS("writeFile", inName, await fetchFile(blobWebM));
+  await ffmpeg.run(
+    "-i", inName,
+    "-r", String(fps),
+    "-pix_fmt", "yuv420p",
+    "-c:v", "libx264",
+    "-profile:v", "high",
+    "-movflags", "+faststart",
+    "-an",
+    outName
+  );
+  const data = ffmpeg.FS("readFile", outName);
+  ffmpeg.FS("unlink", inName); ffmpeg.FS("unlink", outName);
+  return new Blob([data.buffer], { type: "video/mp4" });
 }
 
 /* ========================= Lottie helpers ========================= */
@@ -161,7 +190,7 @@ async function loadAnimFromJson(json){
   });
 }
 
-/* ========================= Knockout compatto ========================= */
+/* ========================= Knockout (compresso) ========================= */
 function toGray(imgData){const{data,width,height}=imgData;const gray=new Uint8Array(width*height);
   for(let i=0,j=0;i<data.length;i+=4,j++){const r=data[i],g=data[i+1],b=data[i+2];gray[j]=Math.min(255,(0.299*r+0.587*g+0.114*b)|0);}return gray;}
 function otsu(gray){const hist=new Float64Array(256);for(let i=0;i<gray.length;i++)hist[gray[i]]++;const total=gray.length;let sum=0;for(let t=0;t<256;t++)sum+=t*hist[t];
@@ -215,7 +244,6 @@ const view = document.getElementById('view');
 const stage = document.getElementById('stage');
 let doodleCanvas=null, doodleDraw={x:0,y:0,w:MASTER_SIZE,h:MASTER_SIZE};
 let previewRunning=false, previewFps=30;
-
 function sizeViewer(css=OUT_SIZE){
   const dpr=window.devicePixelRatio||1;
   view.width = css*dpr; view.height = css*dpr;
@@ -225,7 +253,7 @@ function sizeViewer(css=OUT_SIZE){
 function drawFrameTo(ctx, W, H, svgBitmap){
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
   if(doodleCanvas){
-    ctx.drawImage(doodleCanvas, 0,0,doodleCanvas.width,doodleCanvas.height, doodleDraw.x,doodleDraw.y,doodleDraw.w,doodleDraw.h);
+    ctx.drawImage(doodleCanvas, 0,0, doodleCanvas.width, doodleCanvas.height, doodleDraw.x,doodleDraw.y,doodleDraw.w,doodleDraw.h);
   }
   if(svgBitmap){ ctx.drawImage(svgBitmap,0,0,W,H); }
 }
@@ -272,199 +300,207 @@ const btnClose = document.getElementById('btnClose');
 const ovlTip = document.getElementById('ovlTip');
 
 function showInlineVideoOverlay(blob, filename, mime){
-  // set UI
   const url = URL.createObjectURL(blob);
   inlineVideo.src = url;
   inlineVideo.setAttribute('playsinline','');
-  inlineVideo.loop = true;
-  inlineVideo.controls = true;
-  inlineVideo.currentTime = 0;
+  inlineVideo.loop = true; inlineVideo.controls = true; inlineVideo.currentTime = 0;
 
-  // share availability
+  // Share
   try{
     const file = new File([blob], filename, { type: mime });
     if (navigator.canShare && navigator.canShare({ files:[file] })) {
       btnShare.style.display = '';
       btnShare.onclick = async () => {
         try{ await navigator.share({ files:[file], title:'Export video' }); }
-        catch(e){ /* chiuso o non disponibile */ }
+        catch(e){ /* chiuso */ }
       };
-    } else {
-      btnShare.style.display = 'none';
-    }
+    } else { btnShare.style.display = 'none'; }
   }catch{ btnShare.style.display = 'none'; }
 
-  // download link
-  btnDownload.href = url;
-  btnDownload.download = filename;
+  // Download
+  btnDownload.href = url; btnDownload.download = filename;
 
-  // tip per iOS
+  // Tip
   ovlTip.innerHTML = isIOS()
     ? '📲 iPhone/iPad: tocca e <b>tieni premuto</b> sul video → <b>Salva video</b>. Oppure usa <b>Condividi</b> o <b>Scarica file</b>.'
     : '💻 Desktop: puoi scaricare il file oppure riprodurlo qui.';
 
-  overlay.classList.add('show');
-  overlay.setAttribute('aria-hidden','false');
-
-  // chiusura
+  overlay.classList.add('show'); overlay.setAttribute('aria-hidden','false');
   btnClose.onclick = () => {
-    overlay.classList.remove('show');
-    overlay.setAttribute('aria-hidden','true');
-    inlineVideo.pause();
-    URL.revokeObjectURL(url);
+    overlay.classList.remove('show'); overlay.setAttribute('aria-hidden','true');
+    inlineVideo.pause(); URL.revokeObjectURL(url);
   };
 }
 
-/* ========================= Export VIDEO ========================= */
+/* ========================= Export VIDEO (3 strategie) ========================= */
 async function exportVideoFromAnim(){
   if(!lottieData || !anim){ alert('Animazione non pronta'); return; }
 
-  // === timing dalla Lottie ===
   const fr = Math.min(60, Math.max(1, Math.round(Number(lottieData.fr)||30)));
   const ip = Math.round(lottieData.ip ?? 0);
   const op = Math.round(lottieData.op ?? anim.getDuration(true));
-  const N  = Math.max(1, op - ip); // includiamo tutti i frame (ultimo=primo visivo)
+  const N  = Math.max(1, op - ip); // includiamo tutti i frame
 
-  // === MIME: su iOS forziamo MP4, desktop preferisce WebM ===
-  function pickBestMime(){
-    const prefer = isIOS()
-      ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4']
-      : ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4'];
-    for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
-    return '';
-  }
-  const mime = pickBestMime();
-  if(!mime){ alert('MediaRecorder non supporta un formato video compatibile su questo browser.'); return; }
-  document.getElementById('fmtHint').textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
-
-  // === canvases ===
+  // canvases per disegno
   const master=document.createElement('canvas'); master.width=MASTER_SIZE; master.height=MASTER_SIZE;
   const mctx=master.getContext('2d');
   const out=document.createElement('canvas'); out.width=OUT_SIZE; out.height=OUT_SIZE;
   const octx=out.getContext('2d', { willReadFrequently: true });
 
-  // fermiamo la preview per non contendere
+  // ferma preview
   previewRunning = false;
 
-  // UI
   const btn = document.getElementById('btnExportVID');
-  const old = btn.textContent; btn.disabled = true; btn.textContent = 'Recording… 0%';
+  const old = btn.textContent; btn.disabled = true; btn.textContent = 'Preparazione…';
 
-  // === PRE-ROLL: disegna PRIMO frame prima di avviare recorder ===
+  // pre-roll: disegna primo frame prima di qualsiasi registrazione
   anim.goToAndStop(ip, true);
   await new Promise(r=>requestAnimationFrame(r));
   {
     const svgBmp0 = await rasterizeCurrentSVG();
-    // fondo bianco + doodle + overlay
     drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp0);
     octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
     octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
     octx.filter = `blur(${MICRO_BLUR}px)`;
     octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
     octx.filter = 'none';
-    // ⚠️ iOS: evita posterize per stabilità MediaRecorder
-    if(!isIOS()){
-      const img0 = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
-      posterizeImageData(img0);
-      octx.putImageData(img0,0,0);
-    }
   }
 
-  // === registra lo stream del canvas ===
-  const stream = out.captureStream(fr);
-  const chunks = [];
-  const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
-  recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+  let finalBlob=null, finalMime='video/mp4', usedPath='';
 
-  // Avvio SENZA timeslice (Safari più affidabile così)
-  recorder.start();
-
-  // === render dei frame successivi (ip+1 .. op-1) ===
-  let nextTick = performance.now() + 1000/fr;
-  for(let f=1; f<N; f++){
-    const frameIdx = ip + f;
-    anim.goToAndStop(frameIdx, true);
-    await new Promise(r=>requestAnimationFrame(r));
-
-    const svgBmp = await rasterizeCurrentSVG();
-    drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
-
-    octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
-    octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
-    octx.filter = `blur(${MICRO_BLUR}px)`;
-    octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
-    octx.filter = 'none';
-
-    if(!isIOS()){
-      const img = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
-      posterizeImageData(img);
-      octx.putImageData(img,0,0);
-    }
-
-    // pacing
-    nextTick += 1000/fr;
-    const wait = Math.max(0, nextTick - performance.now());
-    if(wait>0) await new Promise(r=>setTimeout(r, wait));
-
-    if((f & 3) === 0){
-      btn.textContent = `Recording… ${Math.round((f+1)/N*100)}%`;
-    }
-  }
-
-  // === FLUSH su Safari: aspetta ~1 frame, poi stop (NO requestData) ===
+  /* ---------- Path A: iOS/Safari -> MediaRecorder MP4 ---------- */
   if(isIOS()){
-    await new Promise(r=>setTimeout(r, Math.ceil(1000/fr)));
-  }
-  await new Promise(res => { recorder.onstop = res; recorder.stop(); });
-  stream.getTracks().forEach(t=>t.stop());
+    const mime = pickBestMime(); // dovrebbe essere mp4
+    if(!mime){ alert('MediaRecorder non disponibile su questo iPhone/iPad.'); btn.disabled=false; btn.textContent=old; return; }
+    document.getElementById('fmtHint').textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
+    usedPath = 'MediaRecorder iOS (MP4)';
 
-  const blob = new Blob(chunks, { type: mime });
+    const stream = out.captureStream(fr);
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
+    recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
 
-  // Se per qualche motivo è vuoto, facciamo un fallback minimo (timeslice)
-  if(blob.size === 0){
-    console.warn('Recorder ha prodotto un blob vuoto; provo fallback timeslice…');
-    const chunks2 = [];
-    const rec2 = new MediaRecorder(out.captureStream(fr), { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
-    rec2.ondataavailable = e => { if(e.data && e.data.size) chunks2.push(e.data); };
-    // breve re-play dei frame (solo 1 ciclo rapido): ridisegna 1 giro con timeslice
-    rec2.start(200);
-    // ridisegna 1 secondo di animazione (o l’intera se <1s)
-    const framesFallback = Math.min(N, Math.max(5, Math.round(fr*1.0)));
-    for(let i=0;i<framesFallback;i++){
-      const idx = ip + (i % N);
-      anim.goToAndStop(idx, true);
+    recorder.start(); // niente timeslice
+    let nextTick = performance.now() + 1000/fr;
+    for(let f=1; f<N; f++){
+      btn.textContent = `Recording… ${Math.round((f+1)/N*100)}%`;
+      const frameIdx = ip + f;
+      anim.goToAndStop(frameIdx, true);
       await new Promise(r=>requestAnimationFrame(r));
       const svgBmp = await rasterizeCurrentSVG();
       drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
       octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
       octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
       octx.filter = `blur(${MICRO_BLUR}px)`;
-      octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
+      octx.drawImage(master,0,0,MASTER_SIZE,MASTER_SIZE,0,0,OUT_SIZE,OUT_SIZE);
       octx.filter = 'none';
-      if(!isIOS()){
-        const img = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
-        posterizeImageData(img);
-        octx.putImageData(img,0,0);
-      }
-      await new Promise(r=>setTimeout(r, 1000/fr));
+      nextTick += 1000/fr; const wait = Math.max(0, nextTick - performance.now()); if(wait>0) await sleep(wait);
     }
-    rec2.stop();
-    await new Promise(r=>rec2.onstop=r);
-    const b2 = new Blob(chunks2, { type: mime });
-    if(b2.size>0) {
-      // usa il blob del fallback
-      Object.assign(blob, b2);
-    } else {
-      alert('Safari ha bloccato la registrazione del canvas. Prova a ridurre risoluzione o FPS.');
+    await sleep(Math.ceil(1000/fr)); // piccolo flush
+    await new Promise(res => { recorder.onstop = res; recorder.stop(); });
+    stream.getTracks().forEach(t=>t.stop());
+    finalBlob = new Blob(chunks, { type: mime });
+    finalMime = mime;
+  }
+
+  /* ---------- Path B: Desktop con WebCodecs -> Mediabunny MP4 ---------- */
+  if(!finalBlob && hasWebCodecs){
+    try{
+      usedPath = 'WebCodecs + Mediabunny (MP4)';
+      btn.textContent = 'Encode MP4…';
+      const { Output, Mp4OutputFormat, BufferTarget, CanvasSource } =
+        await import('https://cdn.jsdelivr.net/npm/mediabunny/+esm');
+
+      const output = new Output({
+        format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
+        target: new BufferTarget()
+      });
+      const videoSource = new CanvasSource(out, { codec: 'avc', bitrate: Math.max(4_000_000, VIDEO_BITRATE) });
+      output.addVideoTrack(videoSource, { frameRate: fr });
+      await output.start();
+
+      let nextTick = performance.now() + 1000/fr;
+      // Abbiamo già il frame 0 disegnato: aggiungiamolo
+      videoSource.add(0/fr, 1/fr);
+      for(let f=1; f<N; f++){
+        const frameIdx = ip + f;
+        anim.goToAndStop(frameIdx, true);
+        await new Promise(r=>requestAnimationFrame(r));
+        const svgBmp = await rasterizeCurrentSVG();
+        drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
+        octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
+        octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
+        octx.filter = `blur(${MICRO_BLUR}px)`;
+        octx.drawImage(master,0,0,MASTER_SIZE,MASTER_SIZE,0,0,OUT_SIZE,OUT_SIZE);
+        octx.filter = 'none';
+        videoSource.add(f/fr, 1/fr);
+
+        if((f & 3)===0) btn.textContent = `Encode MP4… ${Math.round((f+1)/N*100)}%`;
+        nextTick += 1000/fr; const wait = Math.max(0, nextTick - performance.now()); if(wait>0) await sleep(wait);
+      }
+      await output.finalize();
+      finalBlob = new Blob([output.target.buffer], { type: 'video/mp4' });
+      finalMime = 'video/mp4';
+    }catch(err){
+      console.warn('Mediabunny/WebCodecs fallito:', err);
+      finalBlob = null;
     }
   }
 
-  const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+  /* ---------- Path C: MediaRecorder desktop ---------- */
+  if(!finalBlob){
+    const mime = pickBestMime(); // magari mp4 su alcuni Chrome, altrimenti webm
+    if(!mime){ alert('MediaRecorder non disponibile su questo browser.'); btn.disabled=false; btn.textContent=old; return; }
+    document.getElementById('fmtHint').textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
+    usedPath = `MediaRecorder Desktop (${mime.includes('mp4')?'MP4':'WebM'})`;
+
+    const stream = out.captureStream(fr);
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
+    recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+
+    recorder.start(); // no timeslice
+    let nextTick = performance.now() + 1000/fr;
+    for(let f=1; f<N; f++){
+      btn.textContent = `Recording… ${Math.round((f+1)/N*100)}%`;
+      const frameIdx = ip + f;
+      anim.goToAndStop(frameIdx, true);
+      await new Promise(r=>requestAnimationFrame(r));
+      const svgBmp = await rasterizeCurrentSVG();
+      drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
+      octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
+      octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
+      octx.filter = `blur(${MICRO_BLUR}px)`;
+      octx.drawImage(master,0,0,MASTER_SIZE,MASTER_SIZE,0,0,OUT_SIZE,OUT_SIZE);
+      octx.filter = 'none';
+      nextTick += 1000/fr; const wait = Math.max(0, nextTick - performance.now()); if(wait>0) await sleep(wait);
+    }
+    await new Promise(res => { recorder.onstop = res; recorder.stop(); });
+    stream.getTracks().forEach(t=>t.stop());
+    finalBlob = new Blob(chunks, { type: mime });
+    finalMime = mime;
+
+    // Se è WebM, convertilo in MP4 compatibile (Twitter)
+    if(!mime.includes('mp4')){
+      btn.textContent = 'Converti in MP4…';
+      try{
+        finalBlob = await transcodeToMP4(finalBlob, { fps: fr });
+        finalMime = 'video/mp4';
+      }catch(e){
+        console.error(e);
+        alert('Conversione a MP4 non riuscita. Prova un altro browser o riduci risoluzione/FPS.');
+      }
+    }
+  }
+
+  // Pronto
+  const ext = finalMime.includes('mp4') ? 'mp4' : 'webm';
   const fps = Math.round(Number(lottieData.fr)||fr);
   const filename = `doodle_${OUT_SIZE}px_${fps}fps.${ext}`;
 
-  // Mostra overlay inline nella stessa pagina (iOS e Desktop)
-  showInlineVideoOverlay(blob, filename, mime);
+  console.log('Export path:', usedPath, 'mime=', finalMime, 'size=', finalBlob?.size);
+
+  showInlineVideoOverlay(finalBlob, filename, finalMime);
 
   // ripristina UI + preview
   btn.disabled = false; btn.textContent = old;
@@ -472,7 +508,6 @@ async function exportVideoFromAnim(){
   previewFps = frPreview;
   requestAnimationFrame(()=>{ previewRunning=false; previewLoop(); });
 }
-
 
 /* ========================= Auto-load asset (CSV, meta, anim.json) ========================= */
 let META=null, COLORS=null;
@@ -508,7 +543,7 @@ Gradient 2;#95EAEC|#E6BCF9`); }
   await loadAnimFromJson(await animResp.json());
 
   const fmt = pickBestMime();
-  if(fmt) document.getElementById('fmtHint').textContent = 'Formato: ' + fmt.split(';')[0].toUpperCase();
+  if(fmt) document.getElementById('fmtHint').textContent = 'Formato preferito: ' + fmt.split(';')[0].toUpperCase();
 }
 
 /* ========================= Compose & recolor ========================= */
