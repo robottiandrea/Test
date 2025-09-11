@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="it">
 <head>
+<script src="https://unpkg.com/upng-js@2.1.0/UPNG.js"></script>  
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Doodles GIF Lab — Minimal (single viewer + stable GIF)</title>
@@ -41,6 +42,7 @@
       <button id="btnCompose" class="primary">Fetch &amp; Compose</button>
       <button id="btnExportWebM">Export WebM 3s</button>
       <button id="btnExportGIF">Export GIF 3s</button>
+      <button id="btnExportAPNG">Export APNG 3s</button>
       <label>&nbsp;Size GIF:</label>
       <select id="gifSize">
         <option value="900" selected>900px</option>
@@ -281,6 +283,61 @@ async function exportWebM(durationSec=3,fps=30){
   const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='doodle_demo.webm'; a.click();
   setTimeout(()=>URL.revokeObjectURL(url),10000);
 }
+async function exportAPNG(durationSec = 3, fps = 20, outSize = 900){
+  if (!window.UPNG) { alert('Libreria APNG non caricata'); return; }
+
+  // master 1800→ downscale a outSize (come per GIF)
+  const master = document.createElement('canvas'); master.width = 1800; master.height = 1800;
+  const mctx = master.getContext('2d');
+  const out = document.createElement('canvas'); out.width = outSize; out.height = outSize;
+  const octx = out.getContext('2d');
+
+  const totalFrames = Math.floor(durationSec * fps);
+  const delayMsPerFrame = Math.round(1000 / fps);
+
+  const btn = document.getElementById('btnExportAPNG');
+  if (btn){ var old = btn.textContent; btn.disabled = true; }
+
+  // raccogliamo i frame come ImageData RGBA 8-bit
+  const frames = [];
+  for (let f = 0; f < totalFrames; f++){
+    if (anim){
+      const fr = (lottieData?.fr) || 30;
+      const frame = Math.floor((f / fps) * fr) % Math.floor(anim.getDuration(true));
+      anim.goToAndStop(frame, true);
+      await new Promise(r => requestAnimationFrame(r));
+    }
+
+    const svgBmp = await rasterizeCurrentSVG();
+    // disegna master pieno
+    drawFrameTo(mctx, 1800, 1800, svgBmp);
+
+    // downscale pulito
+    octx.clearRect(0,0,outSize,outSize);
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = 'high';
+    octx.filter = 'blur(0.15px)'; // micro-blur evita aliasing/banding
+    octx.drawImage(master, 0,0,1800,1800, 0,0,outSize,outSize);
+    octx.filter = 'none';
+
+    // cattura ImageData
+    frames.push(octx.getImageData(0,0,outSize,outSize).data.buffer);
+    if (btn && f % 3 === 0) btn.textContent = `Export APNG… ${Math.round((f+1)/totalFrames*100)}%`;
+  }
+
+  // UPNG.encode(buffers, width, height, colorDepth, delays, [filters])
+  // colorDepth: 0=auto (lossless 8-bit per canale). Delays in ms per frame.
+  const delays = new Array(totalFrames).fill(delayMsPerFrame);
+  const apng = UPNG.encode(frames, outSize, outSize, 0, delays);
+
+  const blob = new Blob([apng], { type: 'image/png' }); // APNG è un PNG animato
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `doodle_${outSize}px_${fps}fps.apng`; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 10000);
+
+  if (btn){ btn.disabled = false; btn.textContent = old; }
+}
 
 /* ============ Export GIF (downscale + robust) ============ */
 async function exportGIF(durationSec=3, fps=30, outSize=900){
@@ -416,6 +473,10 @@ function init(){
 document.getElementById('btnCompose').onclick=composeFromId;
 document.getElementById('btnExportWebM').onclick=()=>exportWebM(3,30);
 document.getElementById('btnExportGIF').onclick=()=>exportGIF(3, Number(document.getElementById('gifFps').value||30), Number(document.getElementById('gifSize').value||900));
+document.getElementById('btnExportAPNG').onclick = () =>
+  exportAPNG(3, Number(document.getElementById('gifFps').value || 20),
+                Number(document.getElementById('gifSize').value || 900));
+
 init();
 // ---- Worker GIF: crea un blob URL same-origin a runtime ----
 let GIF_WORKER_URL = null;
