@@ -231,23 +231,26 @@ async function previewLoop(){
     await sleep(1000/previewFps);
   }
 }
-async function offerMobileSave(blob, filename, mime){
-  // 1) Prova lo share nativo con file (iOS/Android moderni)
-  try{
-    const file = new File([blob], filename, { type: mime });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        files: [file],
-        title: 'Export video',
-        text: 'Doodles export'
-      });
-      return; // fatto ✅
-    }
-  }catch(e){ /* fallback sotto */ }
+ function isIOS(){
+  return /iP(hone|ad|od)/.test(navigator.userAgent) || 
+         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
 
-  // 2) Pagina di anteprima con <video> (long-press → "Salva video")
-  const videoUrl = URL.createObjectURL(blob);
-  const html = `
+// preWin è una finestra/scheda pre-aperta SUL CLICK (vedi più sotto)
+async function offerSave(blob, filename, mime, preWin){
+  // 1) iOS: prova lo Share con file (mostra "Salva video" se MP4)
+  if (isIOS()) {
+    try {
+      const file = new File([blob], filename, { type: mime });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files:[file], title:'Export video' });
+        return;
+      }
+    } catch(e) { /* fallback sotto */ }
+
+    // 2) iOS fallback: usa la scheda pre-aperta (user gesture) con <video>
+    const videoUrl = URL.createObjectURL(blob);
+    const html = `
 <!doctype html><meta charset="utf-8">
 <title>${filename}</title>
 <style>
@@ -259,14 +262,37 @@ async function offerMobileSave(blob, filename, mime){
 </style>
 <div class="wrap">
   <video src="${videoUrl}" controls playsinline loop></video>
-  <div class="tip">📲 Su iPhone/iPad: tieni premuto sul video e scegli <b>“Salva video”</b>.<br>
-  In alternativa usa il pulsante qui sotto.</div>
+  <div class="tip">📲 Su iPhone/iPad: tocca il video, poi <b>Condividi</b> → <b>Salva video</b>.<br>
+  Oppure usa il bottone qui sotto.</div>
   <a class="btn" href="${videoUrl}" download="${filename}">⬇️ Scarica file</a>
 </div>`;
-  const page = URL.createObjectURL(new Blob([html], {type:'text/html'}));
-  // iOS preferisce una nuova scheda per mostrare il menu nativo
-  window.open(page, '_blank');
+    const page = new Blob([html], {type:'text/html'});
+    const pageUrl = URL.createObjectURL(page);
+
+    if (preWin && !preWin.closed) {
+      // usiamo la finestra già aperta sul click → niente blocco
+      preWin.location.href = pageUrl;
+    } else {
+      // estrema difesa
+      window.location.href = pageUrl;
+    }
+    return;
+  }
+
+  // 3) Desktop: download diretto via <a download>
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 2000);
 }
+
 
 /* ========================= Export VIDEO via MediaRecorder ========================= */
 // Selezione migliore MIME in base al browser
@@ -282,7 +308,7 @@ function pickBestMime(){
   return ''; // nessuno supportato
 }
 
-async function exportVideoFromAnim(){
+async function exportVideoFromAnim(preWin){
   if(!lottieData || !anim){ alert('Animazione non pronta'); return; }
 
   // fps e range dai dati Lottie
@@ -298,19 +324,17 @@ async function exportVideoFromAnim(){
   const octx=out.getContext('2d', { willReadFrequently: true });
 
   // MIME migliore disponibile (MP4 su iOS/Safari, WebM altrove)
+  // MIME: forza priorità MP4 su iOS
   function pickBestMime(){
-    const prefer = [
-      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-      'video/mp4',
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm'
-    ];
+    const prefer = isIOS()
+      ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4']
+      : ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'];
     for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
     return '';
   }
   const mime = pickBestMime();
   if(!mime){ alert('Browser senza MediaRecorder video compatibile'); return; }
+
 
   // UI
   const btn = document.getElementById('btnExportVID');
@@ -390,14 +414,12 @@ async function exportVideoFromAnim(){
 
   // Blob & download
   const blob = new Blob(chunks, { type: mime });
-  const url = URL.createObjectURL(blob);
   const ext = mime.includes('mp4') ? 'mp4' : 'webm';
   const fps = Math.round(Number(lottieData.fr)||fr);
-  const a=document.createElement('a');
   const filename = `doodle_${OUT_SIZE}px_${fps}fps.${ext}`;
-  
-  offerMobileSave(blob, filename, mime);
-  setTimeout(()=>URL.revokeObjectURL(url), 20000);
+
+  // 👉 salva in modo affidabile su iOS o scarica su desktop
+  await offerSave(blob, filename, mime, preWin);
 
   btn.disabled = false; btn.textContent = old;
 
@@ -484,8 +506,20 @@ function init(){
   sizeViewer(OUT_SIZE);
   autoLoadAssets().catch(e=>{ console.error(e); alert('Errore caricamento asset: '+e.message); });
   document.getElementById('btnCompose').onclick=composeFromId;
-  document.getElementById('btnExportVID').onclick=exportVideoFromAnim;
+
+  document.getElementById('btnExportVID').onclick = async () => {
+    // PRE-OPEN (solo iOS): apre subito la scheda, così non verrà bloccata
+    const preWin = isIOS() ? window.open('about:blank', '_blank') : null;
+    try {
+      await exportVideoFromAnim(preWin);   // passiamo preWin
+    } catch (e) {
+      console.error(e);
+      alert('Errore export: ' + (e.message || e));
+      if (preWin && !preWin.closed) preWin.close();
+    }
+  };
 }
+
 init();
 </script>
 </body>
