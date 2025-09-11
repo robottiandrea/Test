@@ -319,56 +319,70 @@ function showInlineVideoOverlay(blob, filename, mime){
 async function exportVideoFromAnim(){
   if(!lottieData || !anim){ alert('Animazione non pronta'); return; }
 
+  // === timing dalla Lottie ===
   const fr = Math.min(60, Math.max(1, Math.round(Number(lottieData.fr)||30)));
   const ip = Math.round(lottieData.ip ?? 0);
   const op = Math.round(lottieData.op ?? anim.getDuration(true));
-  const N  = Math.max(1, op - ip); // includiamo tutti i frame: ultimo = primo (per te è ok)
+  const N  = Math.max(1, op - ip); // includiamo tutti i frame (ultimo=primo visivo)
 
-  // MIME
+  // === MIME: su iOS forziamo MP4, desktop preferisce WebM ===
+  function pickBestMime(){
+    const prefer = isIOS()
+      ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4']
+      : ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4'];
+    for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
+    return '';
+  }
   const mime = pickBestMime();
-  if(!mime){ alert('Browser senza MediaRecorder video compatibile'); return; }
+  if(!mime){ alert('MediaRecorder non supporta un formato video compatibile su questo browser.'); return; }
   document.getElementById('fmtHint').textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
 
-  // canvases
+  // === canvases ===
   const master=document.createElement('canvas'); master.width=MASTER_SIZE; master.height=MASTER_SIZE;
   const mctx=master.getContext('2d');
   const out=document.createElement('canvas'); out.width=OUT_SIZE; out.height=OUT_SIZE;
   const octx=out.getContext('2d', { willReadFrequently: true });
 
-  // stop preview durante l’export
+  // fermiamo la preview per non contendere
   previewRunning = false;
 
   // UI
   const btn = document.getElementById('btnExportVID');
   const old = btn.textContent; btn.disabled = true; btn.textContent = 'Recording… 0%';
 
-  // PRE-ROLL: disegna PRIMO frame (ip) prima di start
+  // === PRE-ROLL: disegna PRIMO frame prima di avviare recorder ===
   anim.goToAndStop(ip, true);
   await new Promise(r=>requestAnimationFrame(r));
   {
     const svgBmp0 = await rasterizeCurrentSVG();
+    // fondo bianco + doodle + overlay
     drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp0);
     octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
     octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
     octx.filter = `blur(${MICRO_BLUR}px)`;
     octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
     octx.filter = 'none';
-    const img0 = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
-    posterizeImageData(img0);
-    octx.putImageData(img0,0,0);
+    // ⚠️ iOS: evita posterize per stabilità MediaRecorder
+    if(!isIOS()){
+      const img0 = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
+      posterizeImageData(img0);
+      octx.putImageData(img0,0,0);
+    }
   }
 
+  // === registra lo stream del canvas ===
   const stream = out.captureStream(fr);
   const chunks = [];
   const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
   recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
 
-  recorder.start(); // no timeslice (stabile su iOS)
+  // Avvio SENZA timeslice (Safari più affidabile così)
+  recorder.start();
 
-  // render dei restanti frame (ip+1 .. op-1) — manteniamo l’ultimo = primo
+  // === render dei frame successivi (ip+1 .. op-1) ===
   let nextTick = performance.now() + 1000/fr;
   for(let f=1; f<N; f++){
-    const frameIdx = ip + f; // ultimo = op-1
+    const frameIdx = ip + f;
     anim.goToAndStop(frameIdx, true);
     await new Promise(r=>requestAnimationFrame(r));
 
@@ -381,10 +395,13 @@ async function exportVideoFromAnim(){
     octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
     octx.filter = 'none';
 
-    const img = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
-    posterizeImageData(img);
-    octx.putImageData(img,0,0);
+    if(!isIOS()){
+      const img = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
+      posterizeImageData(img);
+      octx.putImageData(img,0,0);
+    }
 
+    // pacing
     nextTick += 1000/fr;
     const wait = Math.max(0, nextTick - performance.now());
     if(wait>0) await new Promise(r=>setTimeout(r, wait));
@@ -394,25 +411,68 @@ async function exportVideoFromAnim(){
     }
   }
 
-  // chiusura pulita, niente tick extra
-  recorder.requestData();
+  // === FLUSH su Safari: aspetta ~1 frame, poi stop (NO requestData) ===
+  if(isIOS()){
+    await new Promise(r=>setTimeout(r, Math.ceil(1000/fr)));
+  }
   await new Promise(res => { recorder.onstop = res; recorder.stop(); });
   stream.getTracks().forEach(t=>t.stop());
 
   const blob = new Blob(chunks, { type: mime });
+
+  // Se per qualche motivo è vuoto, facciamo un fallback minimo (timeslice)
+  if(blob.size === 0){
+    console.warn('Recorder ha prodotto un blob vuoto; provo fallback timeslice…');
+    const chunks2 = [];
+    const rec2 = new MediaRecorder(out.captureStream(fr), { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
+    rec2.ondataavailable = e => { if(e.data && e.data.size) chunks2.push(e.data); };
+    // breve re-play dei frame (solo 1 ciclo rapido): ridisegna 1 giro con timeslice
+    rec2.start(200);
+    // ridisegna 1 secondo di animazione (o l’intera se <1s)
+    const framesFallback = Math.min(N, Math.max(5, Math.round(fr*1.0)));
+    for(let i=0;i<framesFallback;i++){
+      const idx = ip + (i % N);
+      anim.goToAndStop(idx, true);
+      await new Promise(r=>requestAnimationFrame(r));
+      const svgBmp = await rasterizeCurrentSVG();
+      drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
+      octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
+      octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
+      octx.filter = `blur(${MICRO_BLUR}px)`;
+      octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
+      octx.filter = 'none';
+      if(!isIOS()){
+        const img = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
+        posterizeImageData(img);
+        octx.putImageData(img,0,0);
+      }
+      await new Promise(r=>setTimeout(r, 1000/fr));
+    }
+    rec2.stop();
+    await new Promise(r=>rec2.onstop=r);
+    const b2 = new Blob(chunks2, { type: mime });
+    if(b2.size>0) {
+      // usa il blob del fallback
+      Object.assign(blob, b2);
+    } else {
+      alert('Safari ha bloccato la registrazione del canvas. Prova a ridurre risoluzione o FPS.');
+    }
+  }
+
   const ext = mime.includes('mp4') ? 'mp4' : 'webm';
   const fps = Math.round(Number(lottieData.fr)||fr);
   const filename = `doodle_${OUT_SIZE}px_${fps}fps.${ext}`;
 
-  // Mostra overlay inline nella *stessa pagina* (iOS e Desktop)
+  // Mostra overlay inline nella stessa pagina (iOS e Desktop)
   showInlineVideoOverlay(blob, filename, mime);
 
-  // ripristino UI & preview
+  // ripristina UI + preview
   btn.disabled = false; btn.textContent = old;
   const frPreview = Math.min(60, Math.max(1, Math.round(lottieData?.fr || 30)));
   previewFps = frPreview;
   requestAnimationFrame(()=>{ previewRunning=false; previewLoop(); });
 }
+
 
 /* ========================= Auto-load asset (CSV, meta, anim.json) ========================= */
 let META=null, COLORS=null;
