@@ -231,6 +231,42 @@ async function previewLoop(){
     await sleep(1000/previewFps);
   }
 }
+async function offerMobileSave(blob, filename, mime){
+  // 1) Prova lo share nativo con file (iOS/Android moderni)
+  try{
+    const file = new File([blob], filename, { type: mime });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        files: [file],
+        title: 'Export video',
+        text: 'Doodles export'
+      });
+      return; // fatto ✅
+    }
+  }catch(e){ /* fallback sotto */ }
+
+  // 2) Pagina di anteprima con <video> (long-press → "Salva video")
+  const videoUrl = URL.createObjectURL(blob);
+  const html = `
+<!doctype html><meta charset="utf-8">
+<title>${filename}</title>
+<style>
+  body{margin:0;background:#000;color:#fff;font:16px/1.4 system-ui}
+  .wrap{max-width:900px;margin:0 auto;padding:16px}
+  video{display:block;width:100%;height:auto;background:#000}
+  .tip{opacity:.8;margin-top:10px}
+  a.btn{display:inline-block;margin-top:12px;padding:10px 14px;border:1px solid #555;border-radius:10px;color:#fff;text-decoration:none}
+</style>
+<div class="wrap">
+  <video src="${videoUrl}" controls playsinline loop></video>
+  <div class="tip">📲 Su iPhone/iPad: tieni premuto sul video e scegli <b>“Salva video”</b>.<br>
+  In alternativa usa il pulsante qui sotto.</div>
+  <a class="btn" href="${videoUrl}" download="${filename}">⬇️ Scarica file</a>
+</div>`;
+  const page = URL.createObjectURL(new Blob([html], {type:'text/html'}));
+  // iOS preferisce una nuova scheda per mostrare il menu nativo
+  window.open(page, '_blank');
+}
 
 /* ========================= Export VIDEO via MediaRecorder ========================= */
 // Selezione migliore MIME in base al browser
@@ -249,101 +285,128 @@ function pickBestMime(){
 async function exportVideoFromAnim(){
   if(!lottieData || !anim){ alert('Animazione non pronta'); return; }
 
-  // fps e numero frame dalla lottie
+  // fps e range dai dati Lottie
   const fr = Math.min(60, Math.max(1, Math.round(Number(lottieData.fr)||30)));
   const ip = Math.round(lottieData.ip ?? 0);
   const op = Math.round(lottieData.op ?? anim.getDuration(true));
-  const N  = Math.max(1, op - ip);
-  const durationMs = Math.round(N * (1000 / fr));
+  const N  = Math.max(1, op - ip);                // numero frame "ufficiale" Lottie (ip..op-1)
 
-  // prepara canvas master e output
+  // canvases
   const master=document.createElement('canvas'); master.width=MASTER_SIZE; master.height=MASTER_SIZE;
   const mctx=master.getContext('2d');
   const out=document.createElement('canvas'); out.width=OUT_SIZE; out.height=OUT_SIZE;
-  const octx=out.getContext('2d');
+  const octx=out.getContext('2d', { willReadFrequently: true });
 
-  // stream dal canvas con fps target
-  const stream = out.captureStream(fr);
-
+  // MIME migliore disponibile (MP4 su iOS/Safari, WebM altrove)
+  function pickBestMime(){
+    const prefer = [
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ];
+    for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
+    return '';
+  }
   const mime = pickBestMime();
-  if(!mime){ alert('Questo browser non supporta la registrazione video via MediaRecorder. Prova Safari (iOS) o Chrome/Edge/Firefox aggiornati.'); return; }
+  if(!mime){ alert('Browser senza MediaRecorder video compatibile'); return; }
 
-  // feedback UI + hint formato
+  // UI
   const btn = document.getElementById('btnExportVID');
   const old = btn.textContent; btn.disabled = true; btn.textContent = 'Recording… 0%';
   const fmtHint = document.getElementById('fmtHint');
   fmtHint.textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
 
-  const chunks = [];
-  let recResolve, recReject;
-  const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
-  recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
-  recorder.onerror = e => { if(recReject) recReject(e.error||e); };
-  recorder.onstop = () => { if(recResolve) recResolve(); };
-
-  // ferma la preview per non contendere
+  // ferma la preview per non contendere la GPU
   previewRunning = false;
 
-  recorder.start(200); // richieste chunk frequenti
+  // ========== PRE-ROLL: disegna PRIMO FRAME (ip) PRIMA di start ==========
+  anim.goToAndStop(ip, true);
+  await new Promise(r=>requestAnimationFrame(r));
+  {
+    const svgBmp0 = await rasterizeCurrentSVG();
+    drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp0);
+    octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
+    octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
+    octx.filter = `blur(${MICRO_BLUR}px)`;
+    octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
+    octx.filter = 'none';
+    // posterize opzionale (stabilità cromatica)
+    const img0 = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
+    posterizeImageData(img0);
+    octx.putImageData(img0,0,0);
+  }
 
-  // rendering real-time frame-by-frame (sincronizzato a fr)
-  const start = performance.now();
-  let lastUpdate = start, nextTick = start;
+  const stream = out.captureStream(fr);
+  const chunks = [];
+  const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
 
-  for(let f=0; f<N; f++){
-    const frameIdx = ip + f;
+  // Avvio SENZA timeslice (Safari/iOS più stabile)
+  recorder.start();
+
+  // ========== RENDER: includiamo TUTTI i frame ==========
+  // abbiamo già disegnato il frame ip; ora disegniamo ip+1 .. op-1 (totale N-1)
+  let nextTick = performance.now() + 1000/fr;
+  for(let f=1; f<N; f++){
+    const frameIdx = ip + f; // ultimo = op-1
     anim.goToAndStop(frameIdx, true);
     await new Promise(r=>requestAnimationFrame(r));
 
     const svgBmp = await rasterizeCurrentSVG();
     drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
 
-    // downscale + micro-blur (riduce banding)
     octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
     octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
     octx.filter = `blur(${MICRO_BLUR}px)`;
     octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
     octx.filter = 'none';
 
-    // posterize opzionale per stabilità cromatica (puoi disattivare se non serve)
     const img = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
     posterizeImageData(img);
     octx.putImageData(img,0,0);
 
-    // pacing: mantieni ~1000/fr ms tra i frame
+    // pacing a 1000/fr ms (niente attese extra dopo l’ultimo)
     nextTick += 1000/fr;
-    const now = performance.now();
-    const wait = Math.max(0, nextTick - now);
-    if(wait > 0) await sleep(wait);
+    const wait = Math.max(0, nextTick - performance.now());
+    if(wait>0) await new Promise(r=>setTimeout(r, wait));
 
-    // aggiorna percentuale ogni ~200ms
-    if(now - lastUpdate > 200){
+    if((f & 3) === 0){
       btn.textContent = `Recording… ${Math.round((f+1)/N*100)}%`;
-      lastUpdate = now;
     }
   }
 
-  recorder.stop();
-  await new Promise((res,rej)=>{recResolve=res; recReject=rej;});
+  // ========== CHIUSURA PULITA ==========
+  // Nessun "tick extra": mandiamo subito i dati e stoppiamo
+  recorder.requestData();
+  await new Promise(res=>{
+    recorder.onstop = res;
+    recorder.stop();
+  });
 
+  // Solo ORA chiudiamo le tracce (evita code nere in coda)
+  stream.getTracks().forEach(t=>t.stop());
+
+  // Blob & download
   const blob = new Blob(chunks, { type: mime });
   const url = URL.createObjectURL(blob);
   const ext = mime.includes('mp4') ? 'mp4' : 'webm';
   const fps = Math.round(Number(lottieData.fr)||fr);
   const a=document.createElement('a');
-  a.href=url; a.download=`doodle_${OUT_SIZE}px_${fps}fps.${ext}`;
-  a.rel='noreferrer';
-  a.target='_blank'; // iOS-friendly
-  a.click();
+  const filename = `doodle_${OUT_SIZE}px_${fps}fps.${ext}`;
+  
+  offerMobileSave(blob, filename, mime);
   setTimeout(()=>URL.revokeObjectURL(url), 20000);
 
   btn.disabled = false; btn.textContent = old;
 
-  // riattiva la preview a fps originari
+  // riparte la preview
   const frPreview = Math.min(60, Math.max(1, Math.round(lottieData?.fr || 30)));
   previewFps = frPreview;
   requestAnimationFrame(()=>{ previewRunning=false; previewLoop(); });
 }
+
 
 /* ========================= Auto-load asset (CSV, meta, anim.json) ========================= */
 let META=null, COLORS=null;
