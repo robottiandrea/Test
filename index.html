@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Doodles — Export GIF (900px, fps/dur da anim.json)</title>
+  <title>Doodles — Export Video (auto MP4/WebM, fps/dur da anim.json)</title>
   <link rel="icon" href="data:,">
   <style>
-    :root{--bg:#0f1115;--card:#171a21;--text:#eef2ff;--muted:#9aa3b2;--border:#232938;--ok:#67e8f9}
+    :root{--bg:#0f1115;--card:#171a21;--text:#eef2ff;--muted:#9aa3b2;--border:#232938;--ok:#67e8f9;--warn:#ffd166}
     *{box-sizing:border-box}
     body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto}
     .wrap{max-width:980px;margin:20px auto;padding:0 16px;display:grid;gap:14px}
@@ -21,23 +21,23 @@
     #stage{position:relative;margin:auto}
     #view{display:block}
     #lottieOff{position:absolute;left:-99999px;top:-99999px;width:1px;height:1px;overflow:hidden}
+    .hint{color:var(--warn)}
   </style>
 
   <!-- Lottie -->
   <script src="https://unpkg.com/lottie-web/build/player/lottie.min.js"></script>
-  <!-- GIF encoder -->
-  <script src="https://unpkg.com/gif.js.optimized/dist/gif.js"></script>
 </head>
 <body>
 <div class="wrap">
-  <h1>Doodles — Export GIF</h1>
+  <h1>Doodles — Export Video</h1>
 
   <div class="panel">
     <div class="row">
       <label for="doodleId">ID Doodle:</label>
       <input type="number" id="doodleId" placeholder="es. 0" min="0" style="width:120px">
       <button id="btnCompose" class="primary">Fetch &amp; Compose</button>
-      <button id="btnExportGIF">Export GIF</button>
+      <button id="btnExportVID">Export Video</button>
+      <span class="hint" id="fmtHint"></span>
     </div>
   </div>
 
@@ -54,11 +54,10 @@
 
 <script>
 /* ========================= Config fissi ========================= */
-const OUT_SIZE = 900;                  // 900x900 fissi
-const MASTER_SIZE = 1800;              // render master
-const GIF_WORKERS = 4;
-const GIF_QUALITY = 12;                // qualità alta (più peso), niente dither
+const OUT_SIZE = 900;                  // 900x900 fissi in output
+const MASTER_SIZE = 1800;              // render master (svg raster + doodle)
 const MICRO_BLUR = 0.25;               // anti-rumore/banding sul downscale
+const VIDEO_BITRATE = 8_000_000;       // ~8 Mbps (qualità molto buona)
 
 /* ========================= Utils & IPFS ========================= */
 const IPFS_GATEWAYS = [
@@ -70,35 +69,18 @@ async function fetchWithTimeout(url,{timeout=8000,...opts}={}){const ctrl=new Ab
 async function fetchWithFallback(urls,{timeout=8000,...opts}={}){let last=null;for(const u of urls){try{const r=await fetchWithTimeout(u,{timeout,...opts});if(r.ok) return r;last=new Error('HTTP '+r.status);}catch(e){last=e}}throw last||new Error('All gateways failed');}
 function ipfsToHttpFallbacks(ipfsUrl){if(!ipfsUrl) return [];const path=ipfsUrl.startsWith('ipfs://')?ipfsUrl.slice(7):ipfsUrl;const cb='?cb='+Date.now().toString(36);return IPFS_GATEWAYS.map(g=>g+path+cb);}
 
-/* ========================= CSV colori (opzionale) ========================= */
-// Posterize LUT: 6 bit per canale (64 livelli) -> colori stabili frame-to-frame
-function makePosterizeLUT(bits=6){
-  const lut = new Uint8Array(256);
-  const shift = 8 - bits;
-  for (let i=0;i<256;i++) lut[i] = (i >> shift) << shift;
-  return lut;
-}
+/* ========================= Posterize (stabilità colori opzionale) ========================= */
+function makePosterizeLUT(bits=6){const lut=new Uint8Array(256);const shift=8-bits;for(let i=0;i<256;i++) lut[i]=(i>>shift)<<shift;return lut;}
 const POSTER_LUT = makePosterizeLUT(6);
-
 function posterizeImageData(imgData){
-  const d = imgData.data;
-  for (let i=0;i<d.length;i+=4){
-    d[i]   = POSTER_LUT[d[i]];     // R
-    d[i+1] = POSTER_LUT[d[i+1]];   // G
-    d[i+2] = POSTER_LUT[d[i+2]];   // B
-    // A lasciamo com'è
-  }
+  const d=imgData.data;for(let i=0;i<d.length;i+=4){d[i]=POSTER_LUT[d[i]];d[i+1]=POSTER_LUT[d[i+1]];d[i+2]=POSTER_LUT[d[i+2]];}
   return imgData;
 }
-
 function parseColorCsv(text){
   const lines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
   const map=new Map(); const norm=s=>String(s).trim().toLowerCase();
-  for(const raw of lines){
-    const useSemi=raw.split(';').length>raw.split(',').length;
-    const parts=raw.split(useSemi?';':','); if(parts.length<2) continue;
-    const name=parts.shift(); const hex=parts.join(useSemi?';':',');
-    if(!name||!hex) continue;
+  for(const raw of lines){const useSemi=raw.split(';').length>raw.split(',').length;const parts=raw.split(useSemi?';':',');if(parts.length<2) continue;
+    const name=parts.shift(); const hex=parts.join(useSemi?';':','); if(!name||!hex) continue;
     map.set(norm(name), hex.includes('|')?hex.split('|').map(s=>s.trim()):hex.trim());
   }
   return { getStops(name){ const v=map.get(norm(name)); if(!v) throw new Error('Colore non trovato: '+name); return Array.isArray(v)?v:[v]; } };
@@ -142,7 +124,7 @@ async function loadAnimFromJson(json){
 }
 
 /* ========================= Knockout (ritaglio doodle) ========================= */
-/*  — identico al tuo: omesso per brevità e sicurezza visiva — */
+/* (algoritmi compatti) */
 function toGray(imgData){const{data,width,height}=imgData;const gray=new Uint8Array(width*height);
   for(let i=0,j=0;i<data.length;i+=4,j++){const r=data[i],g=data[i+1],b=data[i+2];gray[j]=Math.min(255,(0.299*r+0.587*g+0.114*b)|0);}return gray;}
 function otsu(gray){const hist=new Float64Array(256);for(let i=0;i<gray.length;i++)hist[gray[i]]++;const total=gray.length;let sum=0;for(let t=0;t<256;t++)sum+=t*hist[t];
@@ -182,18 +164,11 @@ async function knockoutProcess(imgBitmap,{ink=64,gap=-1,edge=18,bg_tol=24,feathe
   const guard=Math.max(1,gap>0?gap:0)+1,ink_barrier=dilate(ink_mask,W,H,guard);const seam=new Uint8Array(W*H);
   const yS=Math.min(H-1,ry+rh),xL=Math.max(0,rx-2),xR=Math.min(W-1,rx+rw+2);for(let y=yS;y<=Math.min(H-1,yS+1);y++)for(let x=xL;x<=xR;x++)seam[y*W+x]=1;
   const muro=new Uint8Array(W*H);for(let i=0;i<muro.length;i++)muro[i]=(ink_barrier[i]||edge_dil2[i]||seam[i])?1:0;
-  const R=[],G=[],B=[],ring=2,coords=[];for(let xx=rx;xx<rx+rw;xx++){for(let r=0;r<ring;r++){coords.push((ry+r)*W+xx);coords.push((ry+rh-1-r)*W+xx);}}
-  for(let yy=ry;yy<ry+rh;yy++){for(let r=0;r<ring;r++){coords.push(yy*W+(rx+r));coords.push(yy*W+(rx+rw-1-r));}}
-  const rgbaFlat=imgData.data;for(const p of coords){const x=p%W,y=(p/W)|0;if(ink_morph[y*W+x])continue;const a=rgbaFlat[p*4+3];if(a<10)continue;
-    R.push(rgbaFlat[p*4]),G.push(rgbaFlat[p*4+1]),B.push(rgbaFlat[p*4+2]);}
-  const median=a=>{if(!a.length)return 0;const s=a.slice().sort((A,B)=>A-B);return s[(s.length/2)|0];};
-  const bg=floodBG(muro,null,W,H,rgbaFlat);
+  const rgbaFlat=imgData.data;const bg=floodBG(muro,null,W,H,rgbaFlat);
   let fg=new Uint8Array(W*H);for(let i=0;i<fg.length;i++)fg[i]=bg[i]===0?1:0;fg=peelOutside(fg,ink_morph,W,H,5);
-
   const alphaCanvas=document.createElement('canvas');alphaCanvas.width=W;alphaCanvas.height=H;const actx=alphaCanvas.getContext('2d');
   const rgba=new Uint8ClampedArray(W*H*4);for(let i=0;i<W*H;i++){rgba[i*4+3]=(fg[i]===1||ink_morph[i]===1)?255:0;}actx.putImageData(new ImageData(rgba,W,H),0,0);
   if(1.2>0){const blurC=document.createElement('canvas');blurC.width=W;blurC.height=H;const bctx=blurC.getContext('2d');bctx.filter=`blur(${1.2}px)`;bctx.drawImage(alphaCanvas,0,0);actx.clearRect(0,0,W,H);actx.drawImage(blurC,0,0);}
-
   const masked=document.createElement('canvas');masked.width=W;masked.height=H;const mctx=masked.getContext('2d');mctx.drawImage(imgBitmap,0,0);mctx.globalCompositeOperation='destination-in';mctx.drawImage(alphaCanvas,0,0);
   return { fullCanvas:masked, size_out:[W,H] };
 }
@@ -229,19 +204,15 @@ async function rasterizeCurrentSVG(){
   const svgBlob=new Blob([svgStr],{type:'image/svg+xml'});
   try{ return await createImageBitmap(svgBlob); }
   catch{
-    return await new Promise((resolve,reject)=>{
-      const url=URL.createObjectURL(svgBlob); const im=new Image();
-      im.onload=()=>{resolve(im);URL.revokeObjectURL(url)}; im.onerror=e=>{reject(e);URL.revokeObjectURL(url)}; im.src=url;
-    });
+    return await new Promise((resolve,reject)=>{ const url=URL.createObjectURL(svgBlob); const im=new Image();
+      im.onload=()=>{resolve(im);URL.revokeObjectURL(url)}; im.onerror=e=>{reject(e);URL.revokeObjectURL(url)}; im.src=url; });
   }
 }
 
 async function previewLoop(){
-  if(previewRunning) return;
-  previewRunning=true;
+  if(previewRunning) return; previewRunning=true;
   const dpr=window.devicePixelRatio||1;
-  const ctx=view.getContext('2d');
-  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const ctx=view.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
   const css=view.clientWidth;
 
   while(previewRunning){
@@ -250,8 +221,6 @@ async function previewLoop(){
       anim.goToAndStop(cur, true);
     }
     const svgBmp = await rasterizeCurrentSVG();
-
-    // master -> outSize per la preview
     const master = document.createElement('canvas'); master.width=MASTER_SIZE; master.height=MASTER_SIZE;
     drawFrameTo(master.getContext('2d'), MASTER_SIZE, MASTER_SIZE, svgBmp);
 
@@ -263,120 +232,117 @@ async function previewLoop(){
   }
 }
 
-/* ========================= GIF worker (same-origin) ========================= */
-let GIF_WORKER_URL = null;
-async function ensureGifWorkerUrl(){
-  if(GIF_WORKER_URL) return GIF_WORKER_URL;
-  const res = await fetch('https://unpkg.com/gif.js.optimized/dist/gif.worker.js', {cache:'no-cache'});
-  if(!res.ok) throw new Error('Impossibile scaricare gif.worker.js: '+res.status);
-  const code = await res.text();
-  const blob = new Blob([code], {type:'application/javascript'});
-  GIF_WORKER_URL = URL.createObjectURL(blob);
-  return GIF_WORKER_URL;
+/* ========================= Export VIDEO via MediaRecorder ========================= */
+// Selezione migliore MIME in base al browser
+function pickBestMime(){
+  const prefer = [
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2', // Safari/iOS tipicamente
+    'video/mp4',                               // generico mp4
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm'
+  ];
+  for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
+  return ''; // nessuno supportato
 }
-window.addEventListener('beforeunload', ()=>{ if(GIF_WORKER_URL) URL.revokeObjectURL(GIF_WORKER_URL); });
 
-/* ========================= Export GIF (fps/dur da anim.json) ========================= */
-async function exportGIFFromAnim(){
-  if(!window.GIF){ alert('GIF encoder non caricato'); return; }
+async function exportVideoFromAnim(){
   if(!lottieData || !anim){ alert('Animazione non pronta'); return; }
 
-  // 1) leggi ip/op/fr dalla lottie (manteniamo esattamente timing e numero frame)
-  const fr = Number(lottieData.fr)||30;                 // fps originari
-  const ip = Math.round(lottieData.ip ?? 0);            // frame start
-  const op = Math.round(lottieData.op ?? anim.getDuration(true)); // frame end (non incluso)
-  const N  = Math.max(1, op - ip);                      // numero frame
+  // fps e numero frame dalla lottie
+  const fr = Math.min(60, Math.max(1, Math.round(Number(lottieData.fr)||30)));
+  const ip = Math.round(lottieData.ip ?? 0);
+  const op = Math.round(lottieData.op ?? anim.getDuration(true));
+  const N  = Math.max(1, op - ip);
+  const durationMs = Math.round(N * (1000 / fr));
 
-  // 2) prepara canva master 1800 e output 900 con micro-blur
+  // prepara canvas master e output
   const master=document.createElement('canvas'); master.width=MASTER_SIZE; master.height=MASTER_SIZE;
   const mctx=master.getContext('2d');
-
   const out=document.createElement('canvas'); out.width=OUT_SIZE; out.height=OUT_SIZE;
-  const octx = out.getContext('2d', { willReadFrequently: true });
+  const octx=out.getContext('2d');
 
-  // 3) crea encoder GIF
-  const WORKERS = Math.min(6, navigator.hardwareConcurrency || 4);
-  const gif = new GIF({
-	  workers: GIF_WORKERS,
-	  quality: 10,                  // più veloce di 1, qualità ancora ottima
-	  width: OUT_SIZE,
-	  height: OUT_SIZE,
-	  workerScript: await ensureGifWorkerUrl(),
-	  repeat: 0,
-	  dither: false,                // niente rumore
-	  background: '#ffffff',        // sfondo stabile
-	  transparent: null,
-	  globalPalette: true           // <-- BLOCCA la palette (niente flicker)
-	});
+  // stream dal canvas con fps target
+  const stream = out.captureStream(fr);
 
+  const mime = pickBestMime();
+  if(!mime){ alert('Questo browser non supporta la registrazione video via MediaRecorder. Prova Safari (iOS) o Chrome/Edge/Firefox aggiornati.'); return; }
 
+  // feedback UI + hint formato
+  const btn = document.getElementById('btnExportVID');
+  const old = btn.textContent; btn.disabled = true; btn.textContent = 'Recording… 0%';
+  const fmtHint = document.getElementById('fmtHint');
+  fmtHint.textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
 
-  // 4) costruiamo i delay per ogni frame (tick da ~10ms) mantenendo la durata totale
-  const baseMs = 1000 / fr;
-  const delays = [];
-  let accMs = 0, prevQuant = 0;
-  for(let i=1;i<=N;i++){
-    accMs += baseMs;
-    const quant = Math.max(10, Math.round(accMs/10)*10); // quantizza a 10ms
-    let d = quant - prevQuant;
-    if(d < 10) d = 10;  // evitare 0
-    delays.push(d);
-    prevQuant = quant;
-  }
+  const chunks = [];
+  let recResolve, recReject;
+  const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
+  recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+  recorder.onerror = e => { if(recReject) recReject(e.error||e); };
+  recorder.onstop = () => { if(recResolve) recResolve(); };
 
-  // 5) UI feedback
-  const btn = document.getElementById('btnExportGIF');
-  const old = btn.textContent; btn.disabled = true;
-
-  // stop preview durante export per non contendere il renderer
+  // ferma la preview per non contendere
   previewRunning = false;
 
-  // 6) render frame-by-frame
+  recorder.start(200); // richieste chunk frequenti
+
+  // rendering real-time frame-by-frame (sincronizzato a fr)
+  const start = performance.now();
+  let lastUpdate = start, nextTick = start;
+
   for(let f=0; f<N; f++){
-    const frameIndex = ip + f;
-    anim.goToAndStop(frameIndex, true);
+    const frameIdx = ip + f;
+    anim.goToAndStop(frameIdx, true);
     await new Promise(r=>requestAnimationFrame(r));
 
-    const svgBmp=await rasterizeCurrentSVG();
+    const svgBmp = await rasterizeCurrentSVG();
     drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
 
-    // downscale con smoothing + micro-blur (toglie rumore GIF)
+    // downscale + micro-blur (riduce banding)
     octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
-	octx.imageSmoothingEnabled = true;
-	octx.imageSmoothingQuality = 'high';
-	octx.filter = `blur(${MICRO_BLUR}px)`;  // 0.2–0.25 ok
-	octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
-	octx.filter = 'none';
+    octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
+    octx.filter = `blur(${MICRO_BLUR}px)`;
+    octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
+    octx.filter = 'none';
 
-// niente posterize / getImageData / putImageData
-gif.addFrame(octx, { copy: true, delay: delays[f], dispose: 2 });
+    // posterize opzionale per stabilità cromatica (puoi disattivare se non serve)
+    const img = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
+    posterizeImageData(img);
+    octx.putImageData(img,0,0);
 
+    // pacing: mantieni ~1000/fr ms tra i frame
+    nextTick += 1000/fr;
+    const now = performance.now();
+    const wait = Math.max(0, nextTick - now);
+    if(wait > 0) await sleep(wait);
 
-	// posterize 6-bit per stabilizzare la palette tra i frame
-	const img = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
-	posterizeImageData(img);
-	octx.putImageData(img, 0, 0);
-
-	// disposal 2 = restore to background (evita accumuli)
-	gif.addFrame(octx, { copy: true, delay: delays[f], dispose: 2 });
-
-    if(f%3===0) btn.textContent = `Export GIF… ${Math.round((f+1)/N*100)}%`;
+    // aggiorna percentuale ogni ~200ms
+    if(now - lastUpdate > 200){
+      btn.textContent = `Recording… ${Math.round((f+1)/N*100)}%`;
+      lastUpdate = now;
+    }
   }
 
-  gif.on('progress', p => { btn.textContent = `Packing GIF… ${Math.round(p*100)}%`; });
-  gif.on('finished', blob => {
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url; a.download=`doodle_${OUT_SIZE}px_${Math.round(fr)}fps.gif`;
-    a.rel='noreferrer'; a.target='_blank'; // iOS-friendly
-    a.click();
-    setTimeout(()=>URL.revokeObjectURL(url),20000);
-    btn.disabled=false; btn.textContent=old;
-    // riattiva preview
-    requestAnimationFrame(()=>{ previewRunning=false; previewLoop(); });
-  });
+  recorder.stop();
+  await new Promise((res,rej)=>{recResolve=res; recReject=rej;});
 
-  gif.render();
+  const blob = new Blob(chunks, { type: mime });
+  const url = URL.createObjectURL(blob);
+  const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+  const fps = Math.round(Number(lottieData.fr)||fr);
+  const a=document.createElement('a');
+  a.href=url; a.download=`doodle_${OUT_SIZE}px_${fps}fps.${ext}`;
+  a.rel='noreferrer';
+  a.target='_blank'; // iOS-friendly
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 20000);
+
+  btn.disabled = false; btn.textContent = old;
+
+  // riattiva la preview a fps originari
+  const frPreview = Math.min(60, Math.max(1, Math.round(lottieData?.fr || 30)));
+  previewFps = frPreview;
+  requestAnimationFrame(()=>{ previewRunning=false; previewLoop(); });
 }
 
 /* ========================= Auto-load asset (CSV, meta, anim.json) ========================= */
@@ -402,13 +368,16 @@ Gradient 2;#95EAEC|#E6BCF9`); }
   const animResp = await fetchWithTimeout(base+'anim.json',{timeout:8000,cache:'no-cache'});
   if(!animResp.ok) throw new Error('anim.json mancante');
   await loadAnimFromJson(await animResp.json());
+
+  // mostra formato previsto
+  const fmt = pickBestMime();
+  if(fmt) document.getElementById('fmtHint').textContent = 'Formato: ' + fmt.split(';')[0].toUpperCase();
 }
 
 /* ========================= Compose & recolor ========================= */
 function getRecord(meta,id){ const r=meta[String(id)]; if(!r) throw new Error('ID non trovato nei metadata: '+id);
   return { image:r.image, skinName:r.Skin_colors, sleeveName:r.Sleeve_colors };
 }
-
 async function composeFromId(){
   try{
     const id=Number(document.getElementById('doodleId').value);
@@ -452,7 +421,7 @@ function init(){
   sizeViewer(OUT_SIZE);
   autoLoadAssets().catch(e=>{ console.error(e); alert('Errore caricamento asset: '+e.message); });
   document.getElementById('btnCompose').onclick=composeFromId;
-  document.getElementById('btnExportGIF').onclick=exportGIFFromAnim;
+  document.getElementById('btnExportVID').onclick=exportVideoFromAnim;
 }
 init();
 </script>
