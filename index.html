@@ -1,7 +1,9 @@
 <!doctype html>
 <html lang="it">
 <head>
-<script src="https://unpkg.com/upng-js@2.1.0/UPNG.js"></script>  
+<script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+<script src="https://unpkg.com/upng-js@2.1.0/UPNG.js"></script>
+  
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Doodles GIF Lab — Minimal (single viewer + stable GIF)</title>
@@ -496,6 +498,23 @@ async function ensureGifWorkerUrl() {
 window.addEventListener('beforeunload', () => {
   if (GIF_WORKER_URL) URL.revokeObjectURL(GIF_WORKER_URL);
 });
+<script>
+  // Alcune build di UPNG cercano una funzione di deflate globale.
+  // Se c’è pako, instradiamo la compressione verso pako.deflate.
+  (function(){
+    if (window.UPNG && window.pako) {
+      // UPNG usa internamente una funzione di compressione; la agganciamo a pako
+      if (!UPNG.compress && UPNG.encode) {
+        // fallback su alcune varianti
+        UPNG.compress = function(buf){ return pako.deflate(new Uint8Array(buf)); };
+      }
+      if (UPNG.encode) {
+        // patch comune: alcune build leggono encode.compress
+        UPNG.encode.compress = function(buf){ return pako.deflate(new Uint8Array(buf)); };
+      }
+    }
+  })();
+</script>
 
 </script>
 </body>
