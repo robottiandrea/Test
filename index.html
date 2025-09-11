@@ -3,10 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Doodles — Export Video (auto MP4/WebM, fps/dur da anim.json)</title>
+  <title>Doodles — Export Video (overlay inline, iOS & Desktop)</title>
   <link rel="icon" href="data:,">
   <style>
-    :root{--bg:#0f1115;--card:#171a21;--text:#eef2ff;--muted:#9aa3b2;--border:#232938;--ok:#67e8f9;--warn:#ffd166}
+    :root{
+      --bg:#0f1115;--card:#171a21;--text:#eef2ff;--muted:#9aa3b2;--border:#232938;
+      --ok:#67e8f9;--warn:#ffd166
+    }
     *{box-sizing:border-box}
     body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto}
     .wrap{max-width:980px;margin:20px auto;padding:0 16px;display:grid;gap:14px}
@@ -22,6 +25,17 @@
     #view{display:block}
     #lottieOff{position:absolute;left:-99999px;top:-99999px;width:1px;height:1px;overflow:hidden}
     .hint{color:var(--warn)}
+    /* === Overlay inline per preview/salvataggio video === */
+    #video-overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;place-items:center;z-index:99999}
+    #video-overlay.show{display:grid}
+    #video-card{background:#111;border:1px solid #333;border-radius:14px;max-width:920px;width:92%;padding:12px;color:#fff}
+    #video-card h2{margin:4px 8px 8px;font:600 16px/1.2 system-ui}
+    #video-card .video-wrap{position:relative}
+    #video-card video{display:block;width:100%;height:auto;background:#000;border-radius:10px}
+    #video-card .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-top:10px}
+    #video-card button,#video-card a.btn{background:#0c0e13;color:#fff;border:1px solid #555;border-radius:10px;padding:8px 12px;text-decoration:none}
+    #video-card button.primary{border-color:#67e8f9;color:#67e8f9}
+    #video-card .tip{opacity:.85;margin:6px 2px 0;font-size:13px}
   </style>
 
   <!-- Lottie -->
@@ -52,12 +66,32 @@
   <!-- Lottie off-screen -->
   <div id="lottieOff"></div>
 
+  <!-- Overlay inline (stessa pagina) -->
+  <div id="video-overlay" aria-hidden="true">
+    <div id="video-card" role="dialog" aria-modal="true" aria-labelledby="ovlTitle">
+      <h2 id="ovlTitle">Anteprima video</h2>
+      <div class="video-wrap">
+        <video id="inlineVideo" playsinline controls loop></video>
+      </div>
+      <div class="tip" id="ovlTip">
+        📲 iPhone/iPad: tocca e tieni premuto sul video → <b>Salva video</b>.
+        Oppure usa <b>Condividi</b>.
+      </div>
+      <div class="row">
+        <button id="btnShare" class="primary" style="display:none">Condividi / Salva</button>
+        <a id="btnDownload" class="btn" href="#" download>Scarica file</a>
+        <button id="btnClose">Chiudi</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
-/* ========================= Config fissi ========================= */
-const OUT_SIZE = 900;                  // 900x900 fissi in output
-const MASTER_SIZE = 1800;              // render master (svg raster + doodle)
-const MICRO_BLUR = 0.25;               // anti-rumore/banding sul downscale
-const VIDEO_BITRATE = 8_000_000;       // ~8 Mbps (qualità molto buona)
+/* ========================= Config ========================= */
+const OUT_SIZE = 900;            // 900x900 output
+const MASTER_SIZE = 1800;        // render master
+const MICRO_BLUR = 0.25;         // anti banding/rumore
+const VIDEO_BITRATE = 8_000_000; // ~8 Mbps
 
 /* ========================= Utils & IPFS ========================= */
 const IPFS_GATEWAYS = [
@@ -69,21 +103,25 @@ async function fetchWithTimeout(url,{timeout=8000,...opts}={}){const ctrl=new Ab
 async function fetchWithFallback(urls,{timeout=8000,...opts}={}){let last=null;for(const u of urls){try{const r=await fetchWithTimeout(u,{timeout,...opts});if(r.ok) return r;last=new Error('HTTP '+r.status);}catch(e){last=e}}throw last||new Error('All gateways failed');}
 function ipfsToHttpFallbacks(ipfsUrl){if(!ipfsUrl) return [];const path=ipfsUrl.startsWith('ipfs://')?ipfsUrl.slice(7):ipfsUrl;const cb='?cb='+Date.now().toString(36);return IPFS_GATEWAYS.map(g=>g+path+cb);}
 
-/* ========================= Posterize (stabilità colori opzionale) ========================= */
+/* ========================= Posterize opzionale ========================= */
 function makePosterizeLUT(bits=6){const lut=new Uint8Array(256);const shift=8-bits;for(let i=0;i<256;i++) lut[i]=(i>>shift)<<shift;return lut;}
 const POSTER_LUT = makePosterizeLUT(6);
 function posterizeImageData(imgData){
   const d=imgData.data;for(let i=0;i<d.length;i+=4){d[i]=POSTER_LUT[d[i]];d[i+1]=POSTER_LUT[d[i+1]];d[i+2]=POSTER_LUT[d[i+2]];}
   return imgData;
 }
-function parseColorCsv(text){
-  const lines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-  const map=new Map(); const norm=s=>String(s).trim().toLowerCase();
-  for(const raw of lines){const useSemi=raw.split(';').length>raw.split(',').length;const parts=raw.split(useSemi?';':',');if(parts.length<2) continue;
-    const name=parts.shift(); const hex=parts.join(useSemi?';':','); if(!name||!hex) continue;
-    map.set(norm(name), hex.includes('|')?hex.split('|').map(s=>s.trim()):hex.trim());
-  }
-  return { getStops(name){ const v=map.get(norm(name)); if(!v) throw new Error('Colore non trovato: '+name); return Array.isArray(v)?v:[v]; } };
+
+/* ========================= iOS helpers & MIME ========================= */
+function isIOS(){
+  return /iP(hone|ad|od)/.test(navigator.userAgent) ||
+         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+function pickBestMime(){
+  const prefer = isIOS()
+    ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']
+    : ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4'];
+  for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
+  return '';
 }
 
 /* ========================= Lottie helpers ========================= */
@@ -123,8 +161,7 @@ async function loadAnimFromJson(json){
   });
 }
 
-/* ========================= Knockout (ritaglio doodle) ========================= */
-/* (algoritmi compatti) */
+/* ========================= Knockout compatto ========================= */
 function toGray(imgData){const{data,width,height}=imgData;const gray=new Uint8Array(width*height);
   for(let i=0,j=0;i<data.length;i+=4,j++){const r=data[i],g=data[i+1],b=data[i+2];gray[j]=Math.min(255,(0.299*r+0.587*g+0.114*b)|0);}return gray;}
 function otsu(gray){const hist=new Float64Array(256);for(let i=0;i<gray.length;i++)hist[gray[i]]++;const total=gray.length;let sum=0;for(let t=0;t<256;t++)sum+=t*hist[t];
@@ -185,7 +222,6 @@ function sizeViewer(css=OUT_SIZE){
   view.style.width = css+'px'; view.style.height = css+'px';
   stage.style.width = css+'px'; stage.style.height = css+'px';
 }
-
 function drawFrameTo(ctx, W, H, svgBitmap){
   ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
   if(doodleCanvas){
@@ -193,7 +229,6 @@ function drawFrameTo(ctx, W, H, svgBitmap){
   }
   if(svgBitmap){ ctx.drawImage(svgBitmap,0,0,W,H); }
 }
-
 async function rasterizeCurrentSVG(){
   if(!svgEl) return null;
   const clone=svgEl.cloneNode(true);
@@ -208,13 +243,11 @@ async function rasterizeCurrentSVG(){
       im.onload=()=>{resolve(im);URL.revokeObjectURL(url)}; im.onerror=e=>{reject(e);URL.revokeObjectURL(url)}; im.src=url; });
   }
 }
-
 async function previewLoop(){
   if(previewRunning) return; previewRunning=true;
   const dpr=window.devicePixelRatio||1;
   const ctx=view.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
   const css=view.clientWidth;
-
   while(previewRunning){
     if(anim && lottieData){
       const cur = anim.currentFrame;
@@ -223,99 +256,78 @@ async function previewLoop(){
     const svgBmp = await rasterizeCurrentSVG();
     const master = document.createElement('canvas'); master.width=MASTER_SIZE; master.height=MASTER_SIZE;
     drawFrameTo(master.getContext('2d'), MASTER_SIZE, MASTER_SIZE, svgBmp);
-
     ctx.clearRect(0,0,css,css);
     ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
     ctx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,css,css);
-
     await sleep(1000/previewFps);
   }
 }
- function isIOS(){
-  return /iP(hone|ad|od)/.test(navigator.userAgent) || 
-         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-}
 
-// preWin è una finestra/scheda pre-aperta SUL CLICK (vedi più sotto)
-async function offerSave(blob, filename, mime, preWin){
-  // 1) iOS: prova lo Share con file (mostra "Salva video" se MP4)
-  if (isIOS()) {
-    try {
-      const file = new File([blob], filename, { type: mime });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({ files:[file], title:'Export video' });
-        return;
-      }
-    } catch(e) { /* fallback sotto */ }
+/* ========================= Overlay inline ========================= */
+const overlay = document.getElementById('video-overlay');
+const inlineVideo = document.getElementById('inlineVideo');
+const btnShare = document.getElementById('btnShare');
+const btnDownload = document.getElementById('btnDownload');
+const btnClose = document.getElementById('btnClose');
+const ovlTip = document.getElementById('ovlTip');
 
-    // 2) iOS fallback: usa la scheda pre-aperta (user gesture) con <video>
-    const videoUrl = URL.createObjectURL(blob);
-    const html = `
-<!doctype html><meta charset="utf-8">
-<title>${filename}</title>
-<style>
-  body{margin:0;background:#000;color:#fff;font:16px/1.4 system-ui}
-  .wrap{max-width:900px;margin:0 auto;padding:16px}
-  video{display:block;width:100%;height:auto;background:#000}
-  .tip{opacity:.8;margin-top:10px}
-  a.btn{display:inline-block;margin-top:12px;padding:10px 14px;border:1px solid #555;border-radius:10px;color:#fff;text-decoration:none}
-</style>
-<div class="wrap">
-  <video src="${videoUrl}" controls playsinline loop></video>
-  <div class="tip">📲 Su iPhone/iPad: tocca il video, poi <b>Condividi</b> → <b>Salva video</b>.<br>
-  Oppure usa il bottone qui sotto.</div>
-  <a class="btn" href="${videoUrl}" download="${filename}">⬇️ Scarica file</a>
-</div>`;
-    const page = new Blob([html], {type:'text/html'});
-    const pageUrl = URL.createObjectURL(page);
-
-    if (preWin && !preWin.closed) {
-      // usiamo la finestra già aperta sul click → niente blocco
-      preWin.location.href = pageUrl;
-    } else {
-      // estrema difesa
-      window.location.href = pageUrl;
-    }
-    return;
-  }
-
-  // 3) Desktop: download diretto via <a download>
+function showInlineVideoOverlay(blob, filename, mime){
+  // set UI
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(()=>{
-    document.body.removeChild(a);
+  inlineVideo.src = url;
+  inlineVideo.setAttribute('playsinline','');
+  inlineVideo.loop = true;
+  inlineVideo.controls = true;
+  inlineVideo.currentTime = 0;
+
+  // share availability
+  try{
+    const file = new File([blob], filename, { type: mime });
+    if (navigator.canShare && navigator.canShare({ files:[file] })) {
+      btnShare.style.display = '';
+      btnShare.onclick = async () => {
+        try{ await navigator.share({ files:[file], title:'Export video' }); }
+        catch(e){ /* chiuso o non disponibile */ }
+      };
+    } else {
+      btnShare.style.display = 'none';
+    }
+  }catch{ btnShare.style.display = 'none'; }
+
+  // download link
+  btnDownload.href = url;
+  btnDownload.download = filename;
+
+  // tip per iOS
+  ovlTip.innerHTML = isIOS()
+    ? '📲 iPhone/iPad: tocca e <b>tieni premuto</b> sul video → <b>Salva video</b>. Oppure usa <b>Condividi</b> o <b>Scarica file</b>.'
+    : '💻 Desktop: puoi scaricare il file oppure riprodurlo qui.';
+
+  overlay.classList.add('show');
+  overlay.setAttribute('aria-hidden','false');
+
+  // chiusura
+  btnClose.onclick = () => {
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden','true');
+    inlineVideo.pause();
     URL.revokeObjectURL(url);
-  }, 2000);
+  };
 }
 
-
-/* ========================= Export VIDEO via MediaRecorder ========================= */
-// Selezione migliore MIME in base al browser
-function pickBestMime(){
-  const prefer = [
-    'video/mp4;codecs=avc1.42E01E,mp4a.40.2', // Safari/iOS tipicamente
-    'video/mp4',                               // generico mp4
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm'
-  ];
-  for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
-  return ''; // nessuno supportato
-}
-
-async function exportVideoFromAnim(preWin){
+/* ========================= Export VIDEO ========================= */
+async function exportVideoFromAnim(){
   if(!lottieData || !anim){ alert('Animazione non pronta'); return; }
 
-  // fps e range dai dati Lottie
   const fr = Math.min(60, Math.max(1, Math.round(Number(lottieData.fr)||30)));
   const ip = Math.round(lottieData.ip ?? 0);
   const op = Math.round(lottieData.op ?? anim.getDuration(true));
-  const N  = Math.max(1, op - ip);                // numero frame "ufficiale" Lottie (ip..op-1)
+  const N  = Math.max(1, op - ip); // includiamo tutti i frame: ultimo = primo (per te è ok)
+
+  // MIME
+  const mime = pickBestMime();
+  if(!mime){ alert('Browser senza MediaRecorder video compatibile'); return; }
+  document.getElementById('fmtHint').textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
 
   // canvases
   const master=document.createElement('canvas'); master.width=MASTER_SIZE; master.height=MASTER_SIZE;
@@ -323,29 +335,14 @@ async function exportVideoFromAnim(preWin){
   const out=document.createElement('canvas'); out.width=OUT_SIZE; out.height=OUT_SIZE;
   const octx=out.getContext('2d', { willReadFrequently: true });
 
-  // MIME migliore disponibile (MP4 su iOS/Safari, WebM altrove)
-  // MIME: forza priorità MP4 su iOS
-  function pickBestMime(){
-    const prefer = isIOS()
-      ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4']
-      : ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'];
-    for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
-    return '';
-  }
-  const mime = pickBestMime();
-  if(!mime){ alert('Browser senza MediaRecorder video compatibile'); return; }
-
+  // stop preview durante l’export
+  previewRunning = false;
 
   // UI
   const btn = document.getElementById('btnExportVID');
   const old = btn.textContent; btn.disabled = true; btn.textContent = 'Recording… 0%';
-  const fmtHint = document.getElementById('fmtHint');
-  fmtHint.textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
 
-  // ferma la preview per non contendere la GPU
-  previewRunning = false;
-
-  // ========== PRE-ROLL: disegna PRIMO FRAME (ip) PRIMA di start ==========
+  // PRE-ROLL: disegna PRIMO frame (ip) prima di start
   anim.goToAndStop(ip, true);
   await new Promise(r=>requestAnimationFrame(r));
   {
@@ -356,7 +353,6 @@ async function exportVideoFromAnim(preWin){
     octx.filter = `blur(${MICRO_BLUR}px)`;
     octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
     octx.filter = 'none';
-    // posterize opzionale (stabilità cromatica)
     const img0 = octx.getImageData(0,0,OUT_SIZE,OUT_SIZE);
     posterizeImageData(img0);
     octx.putImageData(img0,0,0);
@@ -364,14 +360,12 @@ async function exportVideoFromAnim(preWin){
 
   const stream = out.captureStream(fr);
   const chunks = [];
-  const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+  const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
   recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
 
-  // Avvio SENZA timeslice (Safari/iOS più stabile)
-  recorder.start();
+  recorder.start(); // no timeslice (stabile su iOS)
 
-  // ========== RENDER: includiamo TUTTI i frame ==========
-  // abbiamo già disegnato il frame ip; ora disegniamo ip+1 .. op-1 (totale N-1)
+  // render dei restanti frame (ip+1 .. op-1) — manteniamo l’ultimo = primo
   let nextTick = performance.now() + 1000/fr;
   for(let f=1; f<N; f++){
     const frameIdx = ip + f; // ultimo = op-1
@@ -391,7 +385,6 @@ async function exportVideoFromAnim(preWin){
     posterizeImageData(img);
     octx.putImageData(img,0,0);
 
-    // pacing a 1000/fr ms (niente attese extra dopo l’ultimo)
     nextTick += 1000/fr;
     const wait = Math.max(0, nextTick - performance.now());
     if(wait>0) await new Promise(r=>setTimeout(r, wait));
@@ -401,37 +394,37 @@ async function exportVideoFromAnim(preWin){
     }
   }
 
-  // ========== CHIUSURA PULITA ==========
-  // Nessun "tick extra": mandiamo subito i dati e stoppiamo
+  // chiusura pulita, niente tick extra
   recorder.requestData();
-  await new Promise(res=>{
-    recorder.onstop = res;
-    recorder.stop();
-  });
-
-  // Solo ORA chiudiamo le tracce (evita code nere in coda)
+  await new Promise(res => { recorder.onstop = res; recorder.stop(); });
   stream.getTracks().forEach(t=>t.stop());
 
-  // Blob & download
   const blob = new Blob(chunks, { type: mime });
   const ext = mime.includes('mp4') ? 'mp4' : 'webm';
   const fps = Math.round(Number(lottieData.fr)||fr);
   const filename = `doodle_${OUT_SIZE}px_${fps}fps.${ext}`;
 
-  // 👉 salva in modo affidabile su iOS o scarica su desktop
-  await offerSave(blob, filename, mime, preWin);
+  // Mostra overlay inline nella *stessa pagina* (iOS e Desktop)
+  showInlineVideoOverlay(blob, filename, mime);
 
+  // ripristino UI & preview
   btn.disabled = false; btn.textContent = old;
-
-  // riparte la preview
   const frPreview = Math.min(60, Math.max(1, Math.round(lottieData?.fr || 30)));
   previewFps = frPreview;
   requestAnimationFrame(()=>{ previewRunning=false; previewLoop(); });
 }
 
-
 /* ========================= Auto-load asset (CSV, meta, anim.json) ========================= */
 let META=null, COLORS=null;
+function parseColorCsv(text){
+  const lines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  const map=new Map(); const norm=s=>String(s).trim().toLowerCase();
+  for(const raw of lines){const useSemi=raw.split(';').length>raw.split(',').length;const parts=raw.split(useSemi?';':',');if(parts.length<2) continue;
+    const name=parts.shift(); const hex=parts.join(useSemi?';':','); if(!name||!hex) continue;
+    map.set(norm(name), hex.includes('|')?hex.split('|').map(s=>s.trim()):hex.trim());
+  }
+  return { getStops(name){ const v=map.get(norm(name)); if(!v) throw new Error('Colore non trovato: '+name); return Array.isArray(v)?v:[v]; } };
+}
 function basePath(){ const u=new URL(window.location.href); u.hash=''; u.search=''; if(u.pathname.includes('/')) u.pathname=u.pathname.replace(/\/[^\/]*$/,'/'); return u.toString(); }
 async function autoLoadAssets(){
   const base=basePath();
@@ -454,7 +447,6 @@ Gradient 2;#95EAEC|#E6BCF9`); }
   if(!animResp.ok) throw new Error('anim.json mancante');
   await loadAnimFromJson(await animResp.json());
 
-  // mostra formato previsto
   const fmt = pickBestMime();
   if(fmt) document.getElementById('fmtHint').textContent = 'Formato: ' + fmt.split(';')[0].toUpperCase();
 }
@@ -483,7 +475,6 @@ async function composeFromId(){
     if(size_out && size_out[0]===MASTER_SIZE && size_out[1]===MASTER_SIZE){ doodleDraw={x:0,y:0,w:MASTER_SIZE,h:MASTER_SIZE}; }
     else{ const W=fullCanvas.width,H=fullCanvas.height,s=Math.min(MASTER_SIZE/W,MASTER_SIZE/H); doodleDraw={x:0,y:0,w:Math.round(W*s),h:Math.round(H*s)}; }
 
-    // recolor overlay
     if(svgEl && COLORS){
       tagAllLayersWithNames(anim);
       const skinStops=COLORS.getStops(rec.skinName), sleeveStops=COLORS.getStops(rec.sleeveName);
@@ -492,7 +483,6 @@ async function composeFromId(){
       setSoftLightByName(svgEl,LAYER_SHADOW,0.8);
     }
 
-    // preview a fps originali (clamp 60)
     const fr = Math.min(60, Math.max(1, Math.round(lottieData?.fr || 30)));
     previewFps = fr;
     sizeViewer(OUT_SIZE);
@@ -506,20 +496,8 @@ function init(){
   sizeViewer(OUT_SIZE);
   autoLoadAssets().catch(e=>{ console.error(e); alert('Errore caricamento asset: '+e.message); });
   document.getElementById('btnCompose').onclick=composeFromId;
-
-  document.getElementById('btnExportVID').onclick = async () => {
-    // PRE-OPEN (solo iOS): apre subito la scheda, così non verrà bloccata
-    const preWin = isIOS() ? window.open('about:blank', '_blank') : null;
-    try {
-      await exportVideoFromAnim(preWin);   // passiamo preWin
-    } catch (e) {
-      console.error(e);
-      alert('Errore export: ' + (e.message || e));
-      if (preWin && !preWin.closed) preWin.close();
-    }
-  };
+  document.getElementById('btnExportVID').onclick=exportVideoFromAnim;
 }
-
 init();
 </script>
 </body>
