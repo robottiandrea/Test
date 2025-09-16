@@ -1,599 +1,504 @@
 <!doctype html>
 <html lang="it">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Doodles — Export Video (MP4 desktop & iOS, overlay inline)</title>
-  <link rel="icon" href="data:,">
-  <style>
-    :root{
-      --bg:#0f1115;--card:#171a21;--text:#eef2ff;--muted:#9aa3b2;--border:#232938;
-      --ok:#67e8f9;--warn:#ffd166
-    }
-    *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto}
-    .wrap{max-width:980px;margin:20px auto;padding:0 16px;display:grid;gap:14px}
-    .panel{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px}
-    h1{margin:0 0 6px;font-size:18px}
-    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-    label{color:var(--muted)}
-    input[type="number"],button{background:#0c0e13;color:var(--text);border:1px solid var(--border);border-radius:10px;padding:8px 10px}
-    button{cursor:pointer}
-    button.primary{border-color:var(--ok);color:var(--ok)}
-    #stageWrap{position:relative;border:1px dashed var(--border);border-radius:14px;overflow:hidden;background:#fff}
-    #stage{position:relative;margin:auto}
-    #view{display:block}
-    #lottieOff{position:absolute;left:-99999px;top:-99999px;width:1px;height:1px;overflow:hidden}
-    .hint{color:var(--warn)}
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ARB8i Lab — Gallery</title>
+<link rel="icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./styles/common.css">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0f1115">
 
-    /* Overlay inline */
-    #video-overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;place-items:center;z-index:99999}
-    #video-overlay.show{display:grid}
-    #video-card{background:#111;border:1px solid #333;border-radius:14px;max-width:920px;width:92%;padding:12px;color:#fff}
-    #video-card h2{margin:4px 8px 8px;font:600 16px/1.2 system-ui}
-    #video-card .video-wrap{position:relative}
-    #video-card video{display:block;width:100%;height:auto;background:#000;border-radius:10px}
-    #video-card .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;margin-top:10px}
-    #video-card button,#video-card a.btn{background:#0c0e13;color:#fff;border:1px solid #555;border-radius:10px;padding:8px 12px;text-decoration:none}
-    #video-card button.primary{border-color:#67e8f9;color:#67e8f9}
-    #video-card .tip{opacity:.85;margin:6px 2px 0;font-size:13px}
-  </style>
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Doodles">
 
-  <!-- Lottie -->
-  <script src="https://unpkg.com/lottie-web/build/player/lottie.min.js"></script>
-  <!-- FFmpeg WASM (fallback WebM->MP4) -->
-  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.6/dist/ffmpeg.min.js"></script>
+<!-- libreria condivisa: mountIdRow, initIdControl, normalizeId, createIdPreview -->
+
+<script src="./scripts/common.js?v=3"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(()=>{});
+  }
+</script>
+
+<style>
+  :root{
+    /* solo variabili/parametri usati QUI (non in common) */
+    --footer-space: calc(44px + env(safe-area-inset-bottom));
+    --card-w:256px;
+    --gap:18px;
+
+    /* params sheen chip */
+    --sheen-width:56px;
+    --sheen-alpha:.18;
+    --sheen-angle:-14deg;
+    --sheen-from:-120%;
+    --sheen-to:220%;
+    --sheen-dur:5.2s;
+    --sheen-delay:1.2s;
+  }
+
+  *{box-sizing:border-box}
+
+  body{
+    min-height:100svh;
+    display:flex;
+    flex-direction:column;
+  }
+  .wrap{ flex:1 0 auto; }
+
+  /* hero */
+  .hero{ text-align:center; margin:8px 0 18px }
+  /* HERO: font fisse */
+  .hero h1{
+    margin:0 0 8px;           /* unifica i due .hero h1 che avevi (6px e 8px) */
+    font-size: 40px;          /* fisso (oppure 2rem se preferisci) */
+    font-weight:600;
+  }
+  .hero p{
+    margin:0;
+    font-size: 14px;          /* fisso */
+    line-height:1.35;
+    color:var(--muted);
+  }
+  .hero .tagline{
+    margin:20px 0 0;
+    font-size: 30px;          /* fisso */
+    line-height:1;
+    color:var(--muted);
+  }
+
+  .hero .sub{ margin-top: 8px !important; }
+
+  /* griglia cards */
+  .grid{
+    display:grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--card-w), var(--card-w)));
+    gap:var(--gap);
+    justify-content:center;
+    justify-items:center;
+    max-width: calc(3 * var(--card-w) + 2 * var(--gap));
+    margin-inline:auto;
+  }
+
+  /* parti di card specifiche della gallery (il resto sta in common.css) */
+  .thumb{ position:relative; aspect-ratio:1/1; background:#0d1016; }
+  .thumb img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .badge{
+    position:absolute; top:8px; left:8px;
+    padding:4px 8px; border-radius:10px; font-size:11px; font-weight:600;
+    background:#fff; color:#0F1116;
+  }
+  .titlebar{ padding:10px 12px; border-top:1px solid var(--border);
+             background:linear-gradient(0deg, rgba(0,0,0,.45), rgba(0,0,0,.15)); }
+  .name{ font-size:15px; font-weight:600 }
+  .by{ font-size:12px; color:var(--muted) }
+  a.cardlink{ position:absolute; inset:0; display:block; text-decoration:none; color:inherit }
+  .empty{ opacity:.8; text-align:center; border:1px dashed var(--border); border-radius:12px; padding:18px }
+  
+  :root{ --navchip-h: 44px; }
+  /* nav chip sticky (solo gallery) */
+  .navchip-bar{
+    position: fixed;                          /* ← era sticky/flex */
+    top: calc(env(safe-area-inset-top) + 12px);
+    left: 0;                                  /* ← ancora ai bordi */
+    right: 0;
+    z-index: 9999;
+    display: flex;
+    justify-content: center;
+    padding: 4px 0;
+  }
+  .navchip{
+    display:inline-flex; align-items:center; gap:8px;
+    padding:8px 14px; border-radius:999px;
+    background: rgba(23,26,33,.85);
+    background: color-mix(in oklab, var(--card) 85%, transparent);
+    border:1px solid var(--border);
+    backdrop-filter: blur(8px);
+    box-shadow:0 8px 24px rgba(0,0,0,.35);
+    font:600 14px/1 'Fredoka', system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    color:var(--text); text-decoration:none; white-space:nowrap;
+    transition:border-color .15s ease, color .15s ease, transform .05s ease;
+    position:relative; overflow:hidden;
+    background: none !important; 
+  }
+  .navchip:hover{ color:var(--acc); border-color:var(--acc); }
+  .navchip:active{ transform: translateY(1px); }
+  /* spinge i contenuti sotto la barra (titolo non si sovrappone) */
+  .wrap{
+    padding-top: calc(env(safe-area-inset-top) + 12px + var(--navchip-h));
+  }
+
+  
+/* Runner di luce che percorre il bordo (trigger: .grid.highlight) */
+
+/* l’SVG sta sopra la card, ma non intercetta click */
+.card{ position:relative; overflow:hidden; }
+.card .runner{
+  position:absolute;
+  inset:-2px;                  /* abbraccia leggermente fuori per non “tagliare” */
+  width:calc(100% + 4px);
+  height:calc(100% + 4px);
+  pointer-events:none;
+  z-index:2;
+}
+
+/* aspetto della traccia luminosa */
+.card .runner rect{
+  fill:none;
+  stroke-width: 2.5;           /* spessore luce */
+  stroke-linejoin: round;
+  stroke-linecap: round;
+
+  /* segmento visibile + gap lungo il perimetro normalizzato (100) */
+  stroke-dasharray: 100 0;     /* 10% luce, 90% gap */
+  stroke-dashoffset: 100;      /* parte “fuori campo” */
+
+  opacity:0;
+  filter: drop-shadow(0 0 8px rgba(138,180,255,.55));
+}
+
+.grid.highlight .card .runner rect{
+  animation:
+    runnerFade 1.6s ease-out forwards,
+    runnerLap  1.6s linear forwards;
+  animation-delay: var(--delay, 0ms), var(--delay, 0ms);
+
+}
+
+
+
+/*questa serve?*/
+@media (max-width:360px){
+  .grid.highlight .card .runner rect { --delay: 0ms; }
+}
+
+/* animazioni */
+@keyframes runnerFade{
+  0%   { opacity:0 }
+  12%  { opacity:1 }
+  70%  { opacity:1 }
+  100% { opacity:0 }
+}
+@keyframes runnerLap{
+  from { stroke-dashoffset: 100 }  /* 100% del giro da fare */
+  to   { stroke-dashoffset: 0 }    /* segmento arriva dove ha iniziato */
+}
+
+/* rispetto accessibilità: niente movimento per chi riduce */
+@media (prefers-reduced-motion:reduce){
+  .grid.highlight .card .runner rect{
+    animation: runnerFade 0.8s ease-out both; /* solo fade, niente corsa */
+  }
+}
+
+
+</style>
+
 </head>
 <body>
-<div class="wrap">
-  <h1>Doodles — Export Video</h1>
-
-  <div class="panel">
-    <div class="row">
-      <label for="doodleId">ID Doodle:</label>
-      <input type="number" id="doodleId" placeholder="es. 0" min="0" style="width:120px">
-      <button id="btnCompose" class="primary">Fetch &amp; Compose</button>
-      <button id="btnExportVID">Export Video (MP4)</button>
-      <span class="hint" id="fmtHint"></span>
-    </div>
+  <div class="navchip-bar">
+    <a class="navchip" href="./Doodles_trait-viewer.html?source=index" title=" Trait Viewer">
+      <span class="shine">Trait Viewer</span>
+    </a>
   </div>
+  
+    <main class="wrap">
+      <header class="hero">
+        <h1 class="brand">
+          <span>ARB8i</span>
+          <img src="icons/HeARt.svg" alt="" class="brand-heart" aria-hidden="true">
+          <span>Lab</span>
+        </h1>
 
-  <div class="panel">
-    <div id="stageWrap">
-      <div id="stage">
-        <canvas id="view"></canvas>
+      
+      <div class="hero-id">
+        <label for="idField" class="form-label">Doodles ID</label>
+      
+        <div class="hero-id-row">
+          <!-- Host dove montiamo preview+input (e NON il bottone) -->
+          <div id="idRowHost"></div>
+      
+          <!-- Contenitore del bottone + popover (il bottone verrà montato qui) -->
+          <div class="id-cta">
+          </div>
+        </div>
+      
+        <p class="sub" style="margin:6px 0 0">
+          Missing your Doodle ID?
+          <a id="tvLink" class="back shimmer idhelp" href="./Doodles_trait-viewer.html?source=index">Find it here!</a>
+        </p>
+        
+        <p id="idError" class="id-error" role="status" aria-live="polite" style="display:none"></p>
       </div>
-    </div>
+     
+    </header>
+
+    <div id="grid" class="grid"></div>
+    <div id="empty" class="empty" style="display:none">Nessun overlay nel manifest.</div>
+  </main>
+
+  <div class="footer-madeby">
+    <a class="shimmer madeby-link" href="https://x.com/robottiandrea" target="_blank" rel="noopener">
+      made by&nbsp;<span>ARB8i</span>–<span>@robottiandrea</span>
+    </a>
   </div>
-
-  <!-- Lottie off-screen -->
-  <div id="lottieOff"></div>
-
-  <!-- Overlay inline -->
-  <div id="video-overlay" aria-hidden="true">
-    <div id="video-card" role="dialog" aria-modal="true" aria-labelledby="ovlTitle">
-      <h2 id="ovlTitle">Anteprima video</h2>
-      <div class="video-wrap">
-        <video id="inlineVideo" playsinline controls loop></video>
-      </div>
-      <div class="tip" id="ovlTip">
-        📲 iPhone/iPad: tocca e tieni premuto sul video → <b>Salva video</b>. Oppure usa <b>Condividi</b>.
-      </div>
-      <div class="row">
-        <button id="btnShare" class="primary" style="display:none">Condividi / Salva</button>
-        <a id="btnDownload" class="btn" href="#" download>Scarica file</a>
-        <button id="btnClose">Chiudi</button>
-      </div>
-    </div>
-  </div>
-</div>
 
 <script>
-/* ========================= Config ========================= */
-const OUT_SIZE = 900;            // 900x900 output
-const MASTER_SIZE = 1800;        // render master
-const MICRO_BLUR = 0.25;         // anti banding
-const VIDEO_BITRATE = 8_000_000; // ~8 Mbps
+/* ====== DOM ====== */
+const GRID = document.getElementById('grid');
+const EMPTY = document.getElementById('empty');
+const idError = document.getElementById('idError');
 
-/* ========================= Utils & IPFS ========================= */
-const IPFS_GATEWAYS = [
-  'https://ipfs.io/ipfs/','https://dweb.link/ipfs/','https://cf-ipfs.com/ipfs/',
-  'https://gateway.pinata.cloud/ipfs/','https://nftstorage.link/ipfs/'
-];
-const sleep = ms => new Promise(r=>setTimeout(r,ms));
-async function fetchWithTimeout(url,{timeout=8000,...opts}={}){const ctrl=new AbortController();const t=setTimeout(()=>ctrl.abort('timeout'),timeout);try{return await fetch(url,{...opts,signal:ctrl.signal});}finally{clearTimeout(t);}}
-async function fetchWithFallback(urls,{timeout=8000,...opts}={}){let last=null;for(const u of urls){try{const r=await fetchWithTimeout(u,{timeout,...opts});if(r.ok) return r;last=new Error('HTTP '+r.status);}catch(e){last=e}}throw last||new Error('All gateways failed');}
-function ipfsToHttpFallbacks(ipfsUrl){if(!ipfsUrl) return [];const path=ipfsUrl.startsWith('ipfs://')?ipfsUrl.slice(7):ipfsUrl;const cb='?cb='+Date.now().toString(36);return IPFS_GATEWAYS.map(g=>g+path+cb);}
-
-/* ========================= Env detection ========================= */
-function isIOS(){
-  return /iP(hone|ad|od)/.test(navigator.userAgent) ||
-         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+/* ====== UI helpers ====== */
+// Ruota un <linearGradient> da 0 a 360° in "dur" ms (fallback senza SMIL)
+function spinGradient(gradEl, dur = 1600){
+  if (!gradEl) return;
+  const t0 = performance.now();
+  function tick(now){
+    const p = Math.min(1, (now - t0) / dur);
+    const angle = 360 * p;
+    gradEl.setAttribute('gradientTransform', `rotate(${angle} 0.5 0.5)`);
+    if (p < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
 }
-function pickBestMime(){
-  const prefer = isIOS()
-    ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']
-    : ['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
-  for(const m of prefer){ if(MediaRecorder.isTypeSupported?.(m)) return m; }
-  return '';
-}
-const hasWebCodecs = 'VideoEncoder' in window && 'VideoFrame' in window;
+  
+function nudgeGrid(){
+  if(!GRID) return;
+  GRID.classList.remove('highlight');
+  void GRID.offsetWidth;
+  GRID.classList.add('highlight');
 
-/* ========================= FFmpeg (fallback WebM->MP4) ========================= */
-let __ffmpeg = null, __ffmpegLoading = null;
-async function ensureFFmpeg(){
-  if(__ffmpeg) return __ffmpeg;
-  if(__ffmpegLoading) return __ffmpegLoading;
-  const { createFFmpeg } = FFmpeg;
-  __ffmpeg = createFFmpeg({
-    log: false,
-    corePath: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js"
+  // avvia la rotazione rainbow su TUTTI i gradient delle card
+ document.querySelectorAll('.runner animateTransform')
+  .forEach(a => a.beginElement());
+
+}
+
+function showPopover(msg){
+  showCenterPop(msg, '', 1600);
+  // Resta l’effetto “onda” sulla griglia dopo la scomparsa del popup
+  setTimeout(() => startShowcase({ dur: 1600, stagger: 120 }), 1700);
+
+}
+// 1° giro in sequenza, poi TUTTO STOP
+function startShowcase({dur = 1600, stagger = 120} = {}){
+  const cards = Array.from(document.querySelectorAll('#grid .card'));
+  if (!GRID || !cards.length) return;
+
+  // Sequenza: assegno i ritardi per-card
+  cards.forEach((card, i) => card.style.setProperty('--delay', `${i * stagger}ms`));
+
+  // Avvio giro: ri-triggero le animazioni + faccio girare il gradient SOLO per 'dur'
+  GRID.classList.remove('highlight');
+  void GRID.offsetWidth;
+  GRID.classList.add('highlight');
+
+  document.querySelectorAll('.runner linearGradient')
+    .forEach(g => spinGradient(g, dur)); // 1 sola rotazione del rainbow
+
+  // Alla fine del giro totale: pulizia e STOP
+  const total = dur + stagger * Math.max(0, cards.length - 1);
+  setTimeout(() => {
+    // tolgo i delay così, se in futuro ri-lanci, riparte da zero
+    cards.forEach(card => card.style.removeProperty('--delay'));
+    // tolgo highlight per evitare qualunque ri-trigger accidentale
+    GRID.classList.remove('highlight');
+  }, total + 50);
+}
+
+
+
+/* ====== Overlays grid ====== */
+let overlays = null;
+
+function cardHTML(item){
+  const href = new URL('editor.html', location.href);
+  href.searchParams.set('overlay', item.id);
+
+  const gradId = `rg-${item.id}`;             // ID univoco per il gradient
+  const thumb  = item.thumb || `thumbs/${item.id}.png`;
+  const badge  = item.badge ? `<div class="badge" style="${item.badgeColor ? `background:${item.badgeColor}` : ''}">${item.badge}</div>` : '';
+  const by     = item.author ? `<div class="by">by ${item.author}</div>` : '';
+
+  return `
+  <article class="card">
+    <div class="thumb">
+      ${badge}
+      <img loading="lazy" src="${thumb}" alt="${item.name || item.id}" />
+    </div>
+
+    <!-- Runner SVG con stroke rainbow -->
+    <svg class="runner" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="${gradId}" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox">
+          <stop offset="0%"   stop-color="#A4A4F4"/>
+          <stop offset="16%"  stop-color="#FFB0DD"/>
+          <stop offset="33%"  stop-color="#FFBE88"/>
+          <stop offset="50%"  stop-color="#FFE6A1"/>
+          <stop offset="66%"  stop-color="#8FEACC"/>
+          <stop offset="83%"  stop-color="#92D0FF"/>
+          <stop offset="100%" stop-color="#A4A4F4"/>
+          <!-- Rotazione (facoltativa). Innesca da JS con beginElement() -->
+          <animateTransform
+            attributeName="gradientTransform"
+            type="rotate"
+            from="0 0.5 0.5"
+            to="360 0.5 0.5"
+            dur="1.6s"
+            begin="indefinite"
+            repeatCount="indefinite"   <!-- aggiungi questo -->
+            fill="freeze" />
+        </linearGradient>
+      </defs>
+
+      <!-- pathLength=100 per usare dash 10 90 come prima.
+           rx/ry: metti lo stesso raggio della tua .card (es. 16) -->
+      <rect x="1" y="1" width="98" height="98" rx="6" ry="6" pathLength="100"
+            stroke="url(#${gradId})" fill="none" vector-effect="non-scaling-stroke" />
+    </svg>
+
+    <div class="titlebar">
+      <div class="name">${item.name || item.id}</div>
+      ${by}
+    </div>
+    <a class="cardlink" href="${href.toString()}"></a>
+  </article>`;
+}
+
+
+
+function updateCardLinksWithId(id){
+  document.querySelectorAll('a.cardlink').forEach(a=>{
+    const u = new URL(a.getAttribute('href'), location.href);
+    if(id==null){ u.searchParams.delete('id'); }
+    else{ u.searchParams.set('id', id); }
+    a.setAttribute('href', u.toString());
   });
-  __ffmpegLoading = __ffmpeg.load().then(()=>__ffmpeg);
-  return __ffmpegLoading;
-}
-async function transcodeToMP4(blobWebM, { fps=30 } = {}){
-  const ffmpeg = await ensureFFmpeg();
-  const inName  = "in.webm";
-  const outName = "out.mp4";
-  const { fetchFile } = FFmpeg;
-  ffmpeg.FS("writeFile", inName, await fetchFile(blobWebM));
-  await ffmpeg.run(
-    "-i", inName,
-    "-r", String(fps),
-    "-pix_fmt", "yuv420p",
-    "-c:v", "libx264",
-    "-profile:v", "high",
-    "-movflags", "+faststart",
-    "-an",
-    outName
-  );
-  const data = ffmpeg.FS("readFile", outName);
-  ffmpeg.FS("unlink", inName); ffmpeg.FS("unlink", outName);
-  return new Blob([data.buffer], { type: "video/mp4" });
 }
 
-/* ========================= Lottie helpers ========================= */
-const LAYER_SKIN='Skin_fill',LAYER_SLEEVE='Sleeve_fill',LAYER_SHADOW='Shadow_fill';
-let anim=null, svgEl=null, lottieData=null;
-function tagAllLayersWithNames(animation){
-  const tag=(el)=>{ const name=el?.data?.nm; const dom=el?.layerElement||el?.baseElement||el?.parentContainer||null;
-    if(name&&dom?.setAttribute) dom.setAttribute('data-name',name);
-    if(el?.elements?.length) el.elements.forEach(tag);
-  };
-  (animation?.renderer?.elements||[]).forEach(tag);
-}
-function getLayerRoots(svg,name){ return [...svg.querySelectorAll(`[data-name="${name}"]`)]; }
-function getLayerShapesByName(svg,name){ const roots=getLayerRoots(svg,name), set=new Set(); roots.forEach(r=>{ r.querySelectorAll('path,polygon,rect,circle,ellipse,use,g').forEach(n=>set.add(n)); }); return [...set]; }
-function forceFill(node,val){ node.setAttribute('fill',val); node.style.setProperty('fill',val,'important'); }
-function ensureDefs(svg){ let d=svg.querySelector('defs'); if(!d){ d=document.createElementNS('http://www.w3.org/2000/svg','defs'); svg.prepend(d);} return d; }
-function injectLinearGradient(svg,id,stops,attrs){ const defs=ensureDefs(svg), lg=document.createElementNS('http://www.w3.org/2000/svg','linearGradient'); lg.setAttribute('id',id); Object.entries(attrs).forEach(([k,v])=>lg.setAttribute(k,v)); stops.forEach(s=>{ const st=document.createElementNS('http://www.w3.org/2000/svg','stop'); st.setAttribute('offset',s.offset); st.setAttribute('stop-color',s.color); if(s.opacity!=null) st.setAttribute('stop-opacity',s.opacity); lg.appendChild(st); }); defs.appendChild(lg); return id; }
-function setLayerFlatByName(svg,name,color){ getLayerShapesByName(svg,name).forEach(n=>forceFill(n,color)); }
-function setLayerGradientStopsByName(svg,name,hexList,orientation='horizontal'){
-  const id=`grad_${name}_${Date.now()}`, n=hexList.length;
-  const stops=hexList.map((c,i)=>({offset:(n===1?0:(i/(n-1)))*100+'%',color:c}));
-  const attrs=orientation==='horizontal'?{x1:'0%',y1:'0%',x2:'100%',y2:'0%'}:{x1:'0%',y1:'0%',x2:'0%',y2:'100%'};
-  injectLinearGradient(svg,id,stops,attrs);
-  getLayerShapesByName(svg,name).forEach(n=>forceFill(n,`url(#${id})`));
-}
-function setSoftLightByName(svg,name,opacity=.8){ getLayerRoots(svg,name).forEach(r=>{ r.style.mixBlendMode='soft-light'; r.style.opacity=String(opacity); }); }
-async function loadAnimFromJson(json){
-  lottieData=json;
-  if(anim){ try{anim.destroy();}catch{} }
-  anim=lottie.loadAnimation({container:document.getElementById('lottieOff'),renderer:'svg',loop:true,autoplay:true,animationData:lottieData});
-  anim.addEventListener('DOMLoaded',()=>{
-    svgEl=anim.renderer.svgElement;
-    svgEl.setAttribute('viewBox',`0 0 ${MASTER_SIZE} ${MASTER_SIZE}`);
-    svgEl.setAttribute('preserveAspectRatio','xMidYMid meet');
-    tagAllLayersWithNames(anim);
-    setSoftLightByName(svgEl,LAYER_SHADOW,0.8);
+function render(){
+  if(!overlays || !overlays.items || overlays.items.length===0){
+    GRID.innerHTML = '';
+    if (EMPTY) EMPTY.style.display = '';
+    return;
+  }
+  if (EMPTY) EMPTY.style.display = 'none';
+  GRID.innerHTML = overlays.items.map((item, i) => cardHTML(item, i)).join('');
+  document.querySelectorAll('#grid .card').forEach((card, i) => {
+    card.style.setProperty('--delay', `${i * 120}ms`); // 120ms tra una card e la successiva
   });
+  const active = (OCNS && typeof OCNS.normalizeId === 'function')
+  ? OCNS.normalizeId(localStorage.getItem('lastId'), 9999)
+  : { valid:false };
+updateCardLinksWithId(active.valid ? active.value : null);
+
+}
+/* ====== Riga ID condivisa: mount + init ====== */
+const OCNS = window.OC;
+
+if (OCNS && typeof OCNS.mountIdRow === 'function') {
+  OCNS.mountIdRow('#idRowHost', {
+    inputId: 'idField',
+    previewId: 'idPreview',
+    buttonId: 'idApplyBtn',
+    buttonText: 'It’s me!',
+    buttonClass: 'id-btn',
+    buttonContainer: '.id-cta',
+    showPreview: true,
+    placeholder: '8929',
+    maxLen: 4
+  });
+} else {
+  console.warn('OC.mountIdRow non disponibile.');
 }
 
-/* ========================= Knockout (compresso) ========================= */
-function toGray(imgData){const{data,width,height}=imgData;const gray=new Uint8Array(width*height);
-  for(let i=0,j=0;i<data.length;i+=4,j++){const r=data[i],g=data[i+1],b=data[i+2];gray[j]=Math.min(255,(0.299*r+0.587*g+0.114*b)|0);}return gray;}
-function otsu(gray){const hist=new Float64Array(256);for(let i=0;i<gray.length;i++)hist[gray[i]]++;const total=gray.length;let sum=0;for(let t=0;t<256;t++)sum+=t*hist[t];
-  let sumB=0,wB=0,varMax=0,thr=96;for(let t=0;t<256;t++){wB+=hist[t];if(wB===0)continue;const wF=total-wB;if(wF===0)break;sumB+=t*hist[t];
-  const mB=sumB/wB,mF=(sum-sumB)/wF;const vb=wB*wF*(mB-mF)*(mB-mF);if(vb>varMax){varMax=vb;thr=t;}}return thr|0;}
-function dilate(m,W,H,it=1){let a=m.slice(0);for(let k=0;k<it;k++){const pad=new Uint8Array((W+2)*(H+2));for(let y=0;y<H;y++)pad.set(a.subarray(y*W,(y+1)*W),(y+1)*(W+2)+1);
-  const out=new Uint8Array(W*H);for(let y=0;y<H;y++){for(let x=0;x<W;x++){let mx=0;for(let dy=0;dy<3;dy++)for(let dx=0;dx<3;dx++)mx=Math.max(mx,pad[(y+dy)*(W+2)+(x+dx)]);
-  out[y*W+x]=mx>0?1:0;}}a=out;}return a;}
-function erode(m,W,H,it=1){let a=m.slice(0);for(let k=0;k<it;k++){const pad=new Uint8Array((W+2)*(H+2));for(let y=0;y<H;y++)pad.set(a.subarray(y*W,(y+1)*W),(y+1)*(W+2)+1);
-  const out=new Uint8Array(W*H);for(let y=0;y<H;y++){for(let x=0;x<W;x++){let mn=1;for(let dy=0;dy<3;dy++)for(let dx=0;dx<3;dx++)mn=Math.min(mn,pad[(y+dy)*(W+2)+(x+dx)]);
-  out[y*W+x]=mn>0?1:0;}}a=out;}return a;}
-function sobelMag(g,W,H){const out=new Uint8Array(W*H);const get=(x,y)=>g[Math.max(0,Math.min(H-1,y))*W+Math.max(0,Math.min(W-1,x))];
-  for(let y=0;y<H;y++){for(let x=0;x<W;x++){const gx=(-1*get(x-1,y-1)+1*get(x+1,y-1)+-2*get(x-1,y)+2*get(x+1,y)+-1*get(x-1,y+1)+1*get(x+1,y+1));
-  const gy=(-1*get(x-1,y-1)-2*get(x,y-1)-1*get(x+1,y-1)+1*get(x-1,y+1)+2*get(x,y+1)+1*get(x+1,y+1));out[y*W+x]=Math.min(255,Math.hypot(gx,gy)|0);}}return out;}
-function floodBG(muro,isBgLike,W,H,rgbaFlat){const N=W*H;const bg=new Uint8Array(N);const q=new Uint32Array(N);let qs=0,qe=0;
-  function push(p){if(bg[p]||muro[p])return;if(isBgLike && !isBgLike(p,rgbaFlat))return;bg[p]=1;q[qe++]=p;}
-  for(let x=0;x<W;x++){push(x);push((H-1)*W+x);}for(let y=0;y<H;y++){push(y*W);push(y*W+(W-1));}
-  while(qs<qe){const p=q[qs++],x=p%W,y=(p/W)|0;const neigh=[p-1,p+1,p-W,p+W];
-    for(const u of neigh){if(u<0||u>=N)continue;const ux=u%W,uy=(u/W)|0;if(Math.abs(ux-x)+Math.abs(uy-y)!==1)continue;
-      if(bg[u]||muro[u])continue;if(isBgLike && !isBgLike(u,rgbaFlat))continue;bg[u]=1;q[qe++]=u;}}return bg;}
-function peelOutside(fg,protect,W,H,it=1){let out=fg.slice(0);for(let k=0;k<it;k++){const nxt=out.slice(0);
-  for(let y=0;y<H;y++){for(let x=0;x<W;x++){const i=y*W+x;if(out[i]===0||protect[i]===1)continue;
-    if((x>0&&out[i-1]===0)||(x<W-1&&out[i+1]===0)||(y>0&&out[i-W]===0)||(y<H-1&&out[i+W]===0))nxt[i]=0;}}out=nxt;}return out;}
-async function knockoutProcess(imgBitmap,{ink=64,gap=-1,edge=18,bg_tol=24,feather=1.2,padding=24}={}){
-  const W=imgBitmap.width,H=imgBitmap.height,c=document.createElement('canvas');c.width=W;c.height=H;
-  const cx=c.getContext('2d');cx.drawImage(imgBitmap,0,0);const imgData=cx.getImageData(0,0,W,H);
-  const gray=toGray(imgData);const thrInk=Math.round(0.5*(0.8*otsu(gray))+0.5*ink)|0;
-  let ink_mask=new Uint8Array(W*H);for(let i=0;i<ink_mask.length;i++)ink_mask[i]=gray[i]<=thrInk?1:0;
-  let ink_morph=gap>=0?dilate(ink_mask,W,H,gap):erode(ink_mask,W,H,-gap);const CLEAN=1;ink_morph=dilate(erode(ink_morph,W,H,CLEAN),W,H,CLEAN);
-  const mag=sobelMag(gray,W,H);const edge_bin=new Uint8Array(W*H);for(let i=0;i<edge_bin.length;i++)edge_bin[i]=mag[i]>=edge?1:0;
-  const edge_dil=dilate(edge_bin,W,H,1);
-  let minx=W,miny=H,maxx=-1,maxy=-1;for(let y=0;y<H;y++)for(let x=0;x<W;x++)if(ink_morph[y*W+x]){if(x<minx)minx=x;if(x>maxx)maxx=x;if(y<miny)miny=y;if(y>maxy)maxy=y;}
-  let rect=[0,0,W,H]; if(maxx>=0) rect=[minx,miny,(maxx-minx+1),(maxy-miny+1)];
-  const [rx,ry,rw,rh]=rect;
-  const edge_dil2=edge_dil.slice(0);const x0=Math.max(0,rx-1),y0=Math.max(0,ry-1),x1=Math.min(W-1,rx+rw+1),y1=Math.min(H-1,ry+rh+1);
-  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)edge_dil2[y*W+x]=0;
-  const guard=Math.max(1,gap>0?gap:0)+1,ink_barrier=dilate(ink_mask,W,H,guard);const seam=new Uint8Array(W*H);
-  const yS=Math.min(H-1,ry+rh),xL=Math.max(0,rx-2),xR=Math.min(W-1,rx+rw+2);for(let y=yS;y<=Math.min(H-1,yS+1);y++)for(let x=xL;x<=xR;x++)seam[y*W+x]=1;
-  const muro=new Uint8Array(W*H);for(let i=0;i<muro.length;i++)muro[i]=(ink_barrier[i]||edge_dil2[i]||seam[i])?1:0;
-  const rgbaFlat=imgData.data;const bg=floodBG(muro,null,W,H,rgbaFlat);
-  let fg=new Uint8Array(W*H);for(let i=0;i<fg.length;i++)fg[i]=bg[i]===0?1:0;fg=peelOutside(fg,ink_morph,W,H,5);
-  const alphaCanvas=document.createElement('canvas');alphaCanvas.width=W;alphaCanvas.height=H;const actx=alphaCanvas.getContext('2d');
-  const rgba=new Uint8ClampedArray(W*H*4);for(let i=0;i<W*H;i++){rgba[i*4+3]=(fg[i]===1||ink_morph[i]===1)?255:0;}actx.putImageData(new ImageData(rgba,W,H),0,0);
-  if(1.2>0){const blurC=document.createElement('canvas');blurC.width=W;blurC.height=H;const bctx=blurC.getContext('2d');bctx.filter=`blur(${1.2}px)`;bctx.drawImage(alphaCanvas,0,0);actx.clearRect(0,0,W,H);actx.drawImage(blurC,0,0);}
-  const masked=document.createElement('canvas');masked.width=W;masked.height=H;const mctx=masked.getContext('2d');mctx.drawImage(imgBitmap,0,0);mctx.globalCompositeOperation='destination-in';mctx.drawImage(alphaCanvas,0,0);
-  return { fullCanvas:masked, size_out:[W,H] };
-}
-
-/* ========================= Viewer ========================= */
-const view = document.getElementById('view');
-const stage = document.getElementById('stage');
-let doodleCanvas=null, doodleDraw={x:0,y:0,w:MASTER_SIZE,h:MASTER_SIZE};
-let previewRunning=false, previewFps=30;
-function sizeViewer(css=OUT_SIZE){
-  const dpr=window.devicePixelRatio||1;
-  view.width = css*dpr; view.height = css*dpr;
-  view.style.width = css+'px'; view.style.height = css+'px';
-  stage.style.width = css+'px'; stage.style.height = css+'px';
-}
-function drawFrameTo(ctx, W, H, svgBitmap){
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H);
-  if(doodleCanvas){
-    ctx.drawImage(doodleCanvas, 0,0, doodleCanvas.width, doodleCanvas.height, doodleDraw.x,doodleDraw.y,doodleDraw.w,doodleDraw.h);
-  }
-  if(svgBitmap){ ctx.drawImage(svgBitmap,0,0,W,H); }
-}
-async function rasterizeCurrentSVG(){
-  if(!svgEl) return null;
-  const clone=svgEl.cloneNode(true);
-  clone.setAttribute('width',MASTER_SIZE); clone.setAttribute('height',MASTER_SIZE);
-  clone.setAttribute('viewBox',`0 0 ${MASTER_SIZE} ${MASTER_SIZE}`);
-  clone.setAttribute('preserveAspectRatio','xMidYMid meet');
-  const svgStr=new XMLSerializer().serializeToString(clone);
-  const svgBlob=new Blob([svgStr],{type:'image/svg+xml'});
-  try{ return await createImageBitmap(svgBlob); }
-  catch{
-    return await new Promise((resolve,reject)=>{ const url=URL.createObjectURL(svgBlob); const im=new Image();
-      im.onload=()=>{resolve(im);URL.revokeObjectURL(url)}; im.onerror=e=>{reject(e);URL.revokeObjectURL(url)}; im.src=url; });
-  }
-}
-async function previewLoop(){
-  if(previewRunning) return; previewRunning=true;
-  const dpr=window.devicePixelRatio||1;
-  const ctx=view.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
-  const css=view.clientWidth;
-  while(previewRunning){
-    if(anim && lottieData){
-      const cur = anim.currentFrame;
-      anim.goToAndStop(cur, true);
+let idCtrl = null;
+if (OCNS && typeof OCNS.initIdControl === 'function') {
+  idCtrl = OCNS.initIdControl({
+    input: '#idField',
+    preview: '#idPreview',
+    button: '#idApplyBtn',
+    defaultId: '8929',
+    max: 9999,
+    persistKey: 'lastId',
+    urlParam: 'id',
+    cleanUrlParam: true,
+    linkUpdater: updateCardLinksWithId,
+    onApply(id){
+      updateCardLinksWithId(id);
+      showPopover('Locked in! Pick a card!');
+    },
+    onValidChange(valid, st){
+      updateCardLinksWithId(valid ? st.value : null);
     }
-    const svgBmp = await rasterizeCurrentSVG();
-    const master = document.createElement('canvas'); master.width=MASTER_SIZE; master.height=MASTER_SIZE;
-    drawFrameTo(master.getContext('2d'), MASTER_SIZE, MASTER_SIZE, svgBmp);
-    ctx.clearRect(0,0,css,css);
-    ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
-    ctx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,css,css);
-    await sleep(1000/previewFps);
+  });
+} else {
+  console.warn('OC.initIdControl non disponibile.');
+}
+/* ===== Popup centrale helpers ===== */
+function showCenterPop(title, desc = '', autoHideMs = 1600){
+  const el = document.getElementById('centerPop');
+  const t  = document.getElementById('cpTitle');
+  const d  = document.getElementById('cpDesc');
+  if(!el || !t || !d) return;
+
+  t.textContent = title || '';
+  d.textContent = desc || '';
+  d.style.display = desc ? '' : 'none';
+
+  el.style.display = 'flex';
+
+  if (autoHideMs > 0){
+    clearTimeout(showCenterPop._t);
+    showCenterPop._t = setTimeout(hideCenterPop, autoHideMs);
   }
 }
-
-/* ========================= Overlay inline ========================= */
-const overlay = document.getElementById('video-overlay');
-const inlineVideo = document.getElementById('inlineVideo');
-const btnShare = document.getElementById('btnShare');
-const btnDownload = document.getElementById('btnDownload');
-const btnClose = document.getElementById('btnClose');
-const ovlTip = document.getElementById('ovlTip');
-
-function showInlineVideoOverlay(blob, filename, mime){
-  const url = URL.createObjectURL(blob);
-  inlineVideo.src = url;
-  inlineVideo.setAttribute('playsinline','');
-  inlineVideo.loop = true; inlineVideo.controls = true; inlineVideo.currentTime = 0;
-
-  // Share
-  try{
-    const file = new File([blob], filename, { type: mime });
-    if (navigator.canShare && navigator.canShare({ files:[file] })) {
-      btnShare.style.display = '';
-      btnShare.onclick = async () => {
-        try{ await navigator.share({ files:[file], title:'Export video' }); }
-        catch(e){ /* chiuso */ }
-      };
-    } else { btnShare.style.display = 'none'; }
-  }catch{ btnShare.style.display = 'none'; }
-
-  // Download
-  btnDownload.href = url; btnDownload.download = filename;
-
-  // Tip
-  ovlTip.innerHTML = isIOS()
-    ? '📲 iPhone/iPad: tocca e <b>tieni premuto</b> sul video → <b>Salva video</b>. Oppure usa <b>Condividi</b> o <b>Scarica file</b>.'
-    : '💻 Desktop: puoi scaricare il file oppure riprodurlo qui.';
-
-  overlay.classList.add('show'); overlay.setAttribute('aria-hidden','false');
-  btnClose.onclick = () => {
-    overlay.classList.remove('show'); overlay.setAttribute('aria-hidden','true');
-    inlineVideo.pause(); URL.revokeObjectURL(url);
-  };
+function hideCenterPop(){
+  const el = document.getElementById('centerPop');
+  if (el) el.style.display = 'none';
 }
+// opzionale: chiudi toccando lo sfondo
+document.getElementById('centerPop')?.addEventListener('click', hideCenterPop);
 
-/* ========================= Export VIDEO (3 strategie) ========================= */
-async function exportVideoFromAnim(){
-  if(!lottieData || !anim){ alert('Animazione non pronta'); return; }
+window.addEventListener('DOMContentLoaded', () => {
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('lock') === '1') {
+    showPopover('Locked in! Pick a card!');
 
-  const fr = Math.min(60, Math.max(1, Math.round(Number(lottieData.fr)||30)));
-  const ip = Math.round(lottieData.ip ?? 0);
-  const op = Math.round(lottieData.op ?? anim.getDuration(true));
-  const N  = Math.max(1, op - ip); // includiamo tutti i frame
-
-  // canvases per disegno
-  const master=document.createElement('canvas'); master.width=MASTER_SIZE; master.height=MASTER_SIZE;
-  const mctx=master.getContext('2d');
-  const out=document.createElement('canvas'); out.width=OUT_SIZE; out.height=OUT_SIZE;
-  const octx=out.getContext('2d', { willReadFrequently: true });
-
-  // ferma preview
-  previewRunning = false;
-
-  const btn = document.getElementById('btnExportVID');
-  const old = btn.textContent; btn.disabled = true; btn.textContent = 'Preparazione…';
-
-  // pre-roll: disegna primo frame prima di qualsiasi registrazione
-  anim.goToAndStop(ip, true);
-  await new Promise(r=>requestAnimationFrame(r));
-  {
-    const svgBmp0 = await rasterizeCurrentSVG();
-    drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp0);
-    octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
-    octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
-    octx.filter = `blur(${MICRO_BLUR}px)`;
-    octx.drawImage(master, 0,0,MASTER_SIZE,MASTER_SIZE, 0,0,OUT_SIZE,OUT_SIZE);
-    octx.filter = 'none';
+    // pulizia: togli 'lock' dall'URL per non ri-triggerare al refresh
+    qs.delete('lock');
+    const clean = qs.toString();
+    history.replaceState(null, '', location.pathname + (clean ? '?' + clean : ''));
   }
+});
 
-  let finalBlob=null, finalMime='video/mp4', usedPath='';
 
-  /* ---------- Path A: iOS/Safari -> MediaRecorder MP4 ---------- */
-  if(isIOS()){
-    const mime = pickBestMime(); // dovrebbe essere mp4
-    if(!mime){ alert('MediaRecorder non disponibile su questo iPhone/iPad.'); btn.disabled=false; btn.textContent=old; return; }
-    document.getElementById('fmtHint').textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
-    usedPath = 'MediaRecorder iOS (MP4)';
-
-    const stream = out.captureStream(fr);
-    const chunks = [];
-    const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
-    recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
-
-    recorder.start(); // niente timeslice
-    let nextTick = performance.now() + 1000/fr;
-    for(let f=1; f<N; f++){
-      btn.textContent = `Recording… ${Math.round((f+1)/N*100)}%`;
-      const frameIdx = ip + f;
-      anim.goToAndStop(frameIdx, true);
-      await new Promise(r=>requestAnimationFrame(r));
-      const svgBmp = await rasterizeCurrentSVG();
-      drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
-      octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
-      octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
-      octx.filter = `blur(${MICRO_BLUR}px)`;
-      octx.drawImage(master,0,0,MASTER_SIZE,MASTER_SIZE,0,0,OUT_SIZE,OUT_SIZE);
-      octx.filter = 'none';
-      nextTick += 1000/fr; const wait = Math.max(0, nextTick - performance.now()); if(wait>0) await sleep(wait);
-    }
-    await sleep(Math.ceil(1000/fr)); // piccolo flush
-    await new Promise(res => { recorder.onstop = res; recorder.stop(); });
-    stream.getTracks().forEach(t=>t.stop());
-    finalBlob = new Blob(chunks, { type: mime });
-    finalMime = mime;
-  }
-
-  /* ---------- Path B: Desktop con WebCodecs -> Mediabunny MP4 ---------- */
-  if(!finalBlob && hasWebCodecs){
+/* ====== Manifest overlays ====== */
+async function loadManifest(){
+  for (const url of ['./overlays/overlays.json','./overlays.json']){
     try{
-      usedPath = 'WebCodecs + Mediabunny (MP4)';
-      btn.textContent = 'Encode MP4…';
-      const { Output, Mp4OutputFormat, BufferTarget, CanvasSource } =
-        await import('https://cdn.jsdelivr.net/npm/mediabunny/+esm');
-
-      const output = new Output({
-        format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
-        target: new BufferTarget()
-      });
-      const videoSource = new CanvasSource(out, { codec: 'avc', bitrate: Math.max(4_000_000, VIDEO_BITRATE) });
-      output.addVideoTrack(videoSource, { frameRate: fr });
-      await output.start();
-
-      let nextTick = performance.now() + 1000/fr;
-      // Abbiamo già il frame 0 disegnato: aggiungiamolo
-      videoSource.add(0/fr, 1/fr);
-      for(let f=1; f<N; f++){
-        const frameIdx = ip + f;
-        anim.goToAndStop(frameIdx, true);
-        await new Promise(r=>requestAnimationFrame(r));
-        const svgBmp = await rasterizeCurrentSVG();
-        drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
-        octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
-        octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
-        octx.filter = `blur(${MICRO_BLUR}px)`;
-        octx.drawImage(master,0,0,MASTER_SIZE,MASTER_SIZE,0,0,OUT_SIZE,OUT_SIZE);
-        octx.filter = 'none';
-        videoSource.add(f/fr, 1/fr);
-
-        if((f & 3)===0) btn.textContent = `Encode MP4… ${Math.round((f+1)/N*100)}%`;
-        nextTick += 1000/fr; const wait = Math.max(0, nextTick - performance.now()); if(wait>0) await sleep(wait);
-      }
-      await output.finalize();
-      finalBlob = new Blob([output.target.buffer], { type: 'video/mp4' });
-      finalMime = 'video/mp4';
-    }catch(err){
-      console.warn('Mediabunny/WebCodecs fallito:', err);
-      finalBlob = null;
-    }
+      const r = await fetch(url);
+      if(r.ok){ overlays = await r.json(); return; }
+    }catch{}
   }
-
-  /* ---------- Path C: MediaRecorder desktop ---------- */
-  if(!finalBlob){
-    const mime = pickBestMime(); // magari mp4 su alcuni Chrome, altrimenti webm
-    if(!mime){ alert('MediaRecorder non disponibile su questo browser.'); btn.disabled=false; btn.textContent=old; return; }
-    document.getElementById('fmtHint').textContent = 'Formato: ' + mime.split(';')[0].toUpperCase();
-    usedPath = `MediaRecorder Desktop (${mime.includes('mp4')?'MP4':'WebM'})`;
-
-    const stream = out.captureStream(fr);
-    const chunks = [];
-    const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: VIDEO_BITRATE });
-    recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
-
-    recorder.start(); // no timeslice
-    let nextTick = performance.now() + 1000/fr;
-    for(let f=1; f<N; f++){
-      btn.textContent = `Recording… ${Math.round((f+1)/N*100)}%`;
-      const frameIdx = ip + f;
-      anim.goToAndStop(frameIdx, true);
-      await new Promise(r=>requestAnimationFrame(r));
-      const svgBmp = await rasterizeCurrentSVG();
-      drawFrameTo(mctx, MASTER_SIZE, MASTER_SIZE, svgBmp);
-      octx.clearRect(0,0,OUT_SIZE,OUT_SIZE);
-      octx.imageSmoothingEnabled = true; octx.imageSmoothingQuality='high';
-      octx.filter = `blur(${MICRO_BLUR}px)`;
-      octx.drawImage(master,0,0,MASTER_SIZE,MASTER_SIZE,0,0,OUT_SIZE,OUT_SIZE);
-      octx.filter = 'none';
-      nextTick += 1000/fr; const wait = Math.max(0, nextTick - performance.now()); if(wait>0) await sleep(wait);
-    }
-    await new Promise(res => { recorder.onstop = res; recorder.stop(); });
-    stream.getTracks().forEach(t=>t.stop());
-    finalBlob = new Blob(chunks, { type: mime });
-    finalMime = mime;
-
-    // Se è WebM, convertilo in MP4 compatibile (Twitter)
-    if(!mime.includes('mp4')){
-      btn.textContent = 'Converti in MP4…';
-      try{
-        finalBlob = await transcodeToMP4(finalBlob, { fps: fr });
-        finalMime = 'video/mp4';
-      }catch(e){
-        console.error(e);
-        alert('Conversione a MP4 non riuscita. Prova un altro browser o riduci risoluzione/FPS.');
-      }
-    }
-  }
-
-  // Pronto
-  const ext = finalMime.includes('mp4') ? 'mp4' : 'webm';
-  const fps = Math.round(Number(lottieData.fr)||fr);
-  const filename = `doodle_${OUT_SIZE}px_${fps}fps.${ext}`;
-
-  console.log('Export path:', usedPath, 'mime=', finalMime, 'size=', finalBlob?.size);
-
-  showInlineVideoOverlay(finalBlob, filename, finalMime);
-
-  // ripristina UI + preview
-  btn.disabled = false; btn.textContent = old;
-  const frPreview = Math.min(60, Math.max(1, Math.round(lottieData?.fr || 30)));
-  previewFps = frPreview;
-  requestAnimationFrame(()=>{ previewRunning=false; previewLoop(); });
+  overlays = { items: [] };
 }
-
-/* ========================= Auto-load asset (CSV, meta, anim.json) ========================= */
-let META=null, COLORS=null;
-function parseColorCsv(text){
-  const lines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-  const map=new Map(); const norm=s=>String(s).trim().toLowerCase();
-  for(const raw of lines){const useSemi=raw.split(';').length>raw.split(',').length;const parts=raw.split(useSemi?';':',');if(parts.length<2) continue;
-    const name=parts.shift(); const hex=parts.join(useSemi?';':','); if(!name||!hex) continue;
-    map.set(norm(name), hex.includes('|')?hex.split('|').map(s=>s.trim()):hex.trim());
-  }
-  return { getStops(name){ const v=map.get(norm(name)); if(!v) throw new Error('Colore non trovato: '+name); return Array.isArray(v)?v:[v]; } };
-}
-function basePath(){ const u=new URL(window.location.href); u.hash=''; u.search=''; if(u.pathname.includes('/')) u.pathname=u.pathname.replace(/\/[^\/]*$/,'/'); return u.toString(); }
-async function autoLoadAssets(){
-  const base=basePath();
-  try{ const r=await fetchWithTimeout(base+'Corrispondenze_Nome_Hex.csv',{timeout:8000,cache:'no-cache'}); COLORS=parseColorCsv(await r.text()); }
-  catch{ COLORS=parseColorCsv(`Skin 1;#F5B39A
-Skin 4;#E7C8A1
-Yellow 1;#FFD84D
-Purple 1;#C39BFF
-Light Blue 1;#9BE2FF
-Pink 1;#FF9BC9
-Gradient 2;#95EAEC|#E6BCF9`); }
-
-  try{ const r=await fetchWithTimeout(base+'Doodles_all_metadata.json',{timeout:8000,cache:'no-cache'}); META=await r.json(); }
-  catch{ META={
-    "0":{"image":"ipfs://QmUEfFfwAh4wyB5UfHCVPUxis4j4Q4kJXtm5x5p3g1fVUn","Skin_colors":"Skin 1","Sleeve_colors":"Yellow 1"},
-    "1":{"image":"ipfs://QmTDxnzcvj2p3xBrKcGv1wxoyhAn2yzCQnZZ9LmFjReuH9","Skin_colors":"Gradient 2","Sleeve_colors":"Purple 1"}
-  }; }
-
-  const animResp = await fetchWithTimeout(base+'anim.json',{timeout:8000,cache:'no-cache'});
-  if(!animResp.ok) throw new Error('anim.json mancante');
-  await loadAnimFromJson(await animResp.json());
-
-  const fmt = pickBestMime();
-  if(fmt) document.getElementById('fmtHint').textContent = 'Formato preferito: ' + fmt.split(';')[0].toUpperCase();
-}
-
-/* ========================= Compose & recolor ========================= */
-function getRecord(meta,id){ const r=meta[String(id)]; if(!r) throw new Error('ID non trovato nei metadata: '+id);
-  return { image:r.image, skinName:r.Skin_colors, sleeveName:r.Sleeve_colors };
-}
-async function composeFromId(){
-  try{
-    const id=Number(document.getElementById('doodleId').value);
-    if(!Number.isFinite(id)) throw new Error('ID non valido');
-    const rec=getRecord(META,id);
-    const urls=ipfsToHttpFallbacks(rec.image);
-    const resp=await fetchWithFallback(urls,{timeout:9000,mode:'cors'});
-    const blob=await resp.blob();
-
-    let bmp=null;
-    try{ bmp=await createImageBitmap(blob,{colorSpaceConversion:'none',premultiplyAlpha:'default'}); }
-    catch{ bmp=await new Promise((resolve,reject)=>{ const url=URL.createObjectURL(blob); const im=new Image();
-      im.onload=()=>{resolve(im);URL.revokeObjectURL(url)}; im.onerror=e=>{reject(e);URL.revokeObjectURL(url)}; im.src=url; }); }
-
-    const { fullCanvas, size_out } = await knockoutProcess(bmp,{ink:64,gap:-1,edge:18,bg_tol:24,feather:1.2,padding:24});
-    doodleCanvas=fullCanvas;
-
-    if(size_out && size_out[0]===MASTER_SIZE && size_out[1]===MASTER_SIZE){ doodleDraw={x:0,y:0,w:MASTER_SIZE,h:MASTER_SIZE}; }
-    else{ const W=fullCanvas.width,H=fullCanvas.height,s=Math.min(MASTER_SIZE/W,MASTER_SIZE/H); doodleDraw={x:0,y:0,w:Math.round(W*s),h:Math.round(H*s)}; }
-
-    if(svgEl && COLORS){
-      tagAllLayersWithNames(anim);
-      const skinStops=COLORS.getStops(rec.skinName), sleeveStops=COLORS.getStops(rec.sleeveName);
-      (skinStops.length===1?setLayerFlatByName:setLayerGradientStopsByName)(svgEl,LAYER_SKIN,skinStops,'horizontal');
-      (sleeveStops.length===1?setLayerFlatByName:setLayerGradientStopsByName)(svgEl,LAYER_SLEEVE,sleeveStops,'horizontal');
-      setSoftLightByName(svgEl,LAYER_SHADOW,0.8);
-    }
-
-    const fr = Math.min(60, Math.max(1, Math.round(lottieData?.fr || 30)));
-    previewFps = fr;
-    sizeViewer(OUT_SIZE);
-    previewRunning=false;
-    requestAnimationFrame(()=>previewLoop());
-  }catch(err){ console.error(err); alert('Errore: '+(err.message||String(err))); }
-}
-
-/* ========================= Init ========================= */
-function init(){
-  sizeViewer(OUT_SIZE);
-  autoLoadAssets().catch(e=>{ console.error(e); alert('Errore caricamento asset: '+e.message); });
-  document.getElementById('btnCompose').onclick=composeFromId;
-  document.getElementById('btnExportVID').onclick=exportVideoFromAnim;
-}
-init();
+loadManifest().then(render).catch(()=>{ overlays = { items: [] }; render(); });
 </script>
+<!-- Popup centrale (riutilizzabile) -->
+<div id="centerPop" class="center-pop" role="dialog" aria-modal="true" aria-live="assertive" style="display:none">
+  <div class="box">
+    <div id="cpTitle" class="title"></div>
+    <p id="cpDesc" class="desc"></p>
+  </div>
+</div>
+  
 </body>
 </html>
